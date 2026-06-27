@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn src/index.ts",
+    "dev": "ts-node-dev --files --respawn src/index.ts",
+    "migrate": "ts-node --files src/migrate.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,12 +15,16 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "pg": "^8.22.0"
+    "geoip-lite": "^2.0.3",
+    "pg": "^8.22.0",
+    "ua-parser-js": "^2.0.10"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/geoip-lite": "^1.4.4",
     "@types/node": "^26.0.1",
     "@types/pg": "^8.20.0",
+    "@types/ua-parser-js": "^0.7.39",
     "ts-node-dev": "^2.0.0",
     "typescript": "^6.0.3"
   }

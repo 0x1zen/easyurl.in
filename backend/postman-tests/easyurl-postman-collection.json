@@ -1,0 +1,658 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-47a8-9b0c-d1e2f3a4b5c6",
+    "name": "easyurl.in - Backend API Tests",
+    "description": "Full regression + feature test suite for the easyurl.in backend.\n\nPREREQUISITES:\n1. Server running locally (default assumes http://localhost:3000 - update the baseUrl variable if different).\n2. Two subscribers must already exist in Postgres:\n   - api_key = 'test-key-123', plan_id = 1 (Free)\n   - api_key = 'pro-test-key-456', plan_id = 2 (Pro)\n\nHOW TO RUN: Use Collection Runner (top right 'Run' button on the collection) and run ALL folders in order with 1 iteration. Later requests depend on variables captured by earlier ones, so order matters - don't run folders individually out of sequence on a fresh DB.\n\nNOTE ON RE-RUNNING: Folder 7 intentionally pushes the Free subscriber to its 5-active-URL cap. Running the whole collection again without resetting will eventually make even Folder 1's create request fail with 403 - that IS the limit working correctly, not a bug. To reset Free's test data between runs, run this in DBeaver:\n\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id = 1);\nDELETE FROM urls WHERE subscriber_id = 1;\n\n(Adjust subscriber_id = 1 if your Free test subscriber has a different id.)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "freeApiKey", "value": "test-key-123", "type": "string" },
+    { "key": "proApiKey", "value": "pro-test-key-456", "type": "string" },
+    { "key": "freeShortCode", "value": "", "type": "string" },
+    { "key": "freeUrlId", "value": "", "type": "string" },
+    { "key": "proShortCode1", "value": "", "type": "string" },
+    { "key": "proUrlId1", "value": "", "type": "string" },
+    { "key": "proShortCode2", "value": "", "type": "string" },
+    { "key": "proUrlId2", "value": "", "type": "string" },
+    { "key": "renameAlias", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Regression Checks",
+      "description": "Confirms the core engine (create + redirect) still works after the recent CommonJS config changes.",
+      "item": [
+        {
+          "name": "Create Short URL (Free) - Happy Path",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response contains a shortCode\", function () {",
+                  "    pm.expect(json.shortCode).to.be.a(\"string\");",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"freeShortCode\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://google.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Redirect Returns 302 (Not Cached)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});",
+                  "",
+                  "pm.test(\"Redirects to the original URL\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"https://google.com\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{freeShortCode}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Setup Test Fixtures",
+      "description": "Creates real Pro URLs and captures every id/short_code needed by later folders - no manual DB lookups required.",
+      "item": [
+        {
+          "name": "Get Free URLs List (capture freeUrlId)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const urls = pm.response.json();",
+                  "const match = urls.find((u) => u.short_code === pm.collectionVariables.get(\"freeShortCode\"));",
+                  "",
+                  "pm.test(\"Found the Free URL just created\", function () {",
+                  "    pm.expect(match).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "if (match) {",
+                  "    pm.collectionVariables.set(\"freeUrlId\", match.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        },
+        {
+          "name": "Create Short URL (Pro) #1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set(\"proShortCode1\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Create Short URL (Pro) #2 With Custom Alias",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Custom alias was honored as the short code\", function () {",
+                  "    pm.expect(json.shortCode).to.match(/^createalias/);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"proShortCode2\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example.org\", \"customAlias\": \"createalias{{$timestamp}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Get Pro URLs List (capture proUrlId1 & proUrlId2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const urls = pm.response.json();",
+                  "const match1 = urls.find((u) => u.short_code === pm.collectionVariables.get(\"proShortCode1\"));",
+                  "const match2 = urls.find((u) => u.short_code === pm.collectionVariables.get(\"proShortCode2\"));",
+                  "",
+                  "pm.test(\"Found both Pro URLs just created\", function () {",
+                  "    pm.expect(match1).to.not.be.undefined;",
+                  "    pm.expect(match2).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "if (match1) pm.collectionVariables.set(\"proUrlId1\", match1.id);",
+                  "if (match2) pm.collectionVariables.set(\"proUrlId2\", match2.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Plan Gating & Ownership",
+      "description": "Confirms manage_links is correctly gated by plan, and that ownership mismatches return 404 (not 403) to avoid leaking which ids exist.",
+      "item": [
+        {
+          "name": "Free Blocked From Deleting Own Link (403 - Plan Gating)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 (Free plan lacks manage_links)\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{freeUrlId}}"
+          }
+        },
+        {
+          "name": "Pro Deletes Own Link (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{proUrlId1}}"
+          }
+        },
+        {
+          "name": "Pro Tries Deleting Free's Link (404 - Ownership Hidden)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 404, not 403 (ownership mismatch hides existence)\", function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{freeUrlId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Alias Rename",
+      "description": "Tests successful rename and the unique-collision path. A fresh alias is generated per run so this folder is safe to re-run without manual cleanup.",
+      "item": [
+        {
+          "name": "Rename Alias - Success (200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"renameAlias\", \"renamed\" + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"short_code matches the new alias\", function () {",
+                  "    pm.expect(json.short_code).to.eql(pm.collectionVariables.get(\"renameAlias\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"newAlias\": \"{{renameAlias}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/urls/{{proUrlId2}}"
+          }
+        },
+        {
+          "name": "Rename Alias - Already Taken (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 409 (alias already taken)\", function () {",
+                  "    pm.response.to.have.status(409);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"newAlias\": \"{{renameAlias}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/urls/{{proUrlId1}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Reactivation",
+      "description": "Confirms reactivating a soft-deleted link works (and re-checks the active limit), and that explicit reactivate:false is rejected in favor of DELETE.",
+      "item": [
+        {
+          "name": "Reactivate Deleted Link (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"is_active is true again\", function () {",
+                  "    pm.expect(json.is_active).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reactivate\": true}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/urls/{{proUrlId1}}"
+          }
+        },
+        {
+          "name": "Reactivate Explicit False Rejected (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 400 (use DELETE to deactivate)\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reactivate\": false}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/urls/{{proUrlId1}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Listing Isolation",
+      "description": "Confirms one subscriber's GET /urls never leaks another subscriber's links.",
+      "item": [
+        {
+          "name": "Free User Sees Only Own Links",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const urls = pm.response.json();",
+                  "const proCode1 = pm.collectionVariables.get(\"proShortCode1\");",
+                  "const proCode2 = pm.collectionVariables.get(\"proShortCode2\");",
+                  "const renamedCode = pm.collectionVariables.get(\"renameAlias\");",
+                  "",
+                  "const leaked = urls.find((u) =>",
+                  "    u.short_code === proCode1 || u.short_code === proCode2 || u.short_code === renamedCode",
+                  ");",
+                  "",
+                  "pm.test(\"No Pro-owned codes appear in Free's list\", function () {",
+                  "    pm.expect(leaked).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Active Limit Enforcement (Free Plan)",
+      "description": "Free plan caps at 5 ACTIVE urls. Folder 1 already created one - these 4 bring the count to 5, and the 5th request proves the cap is enforced.",
+      "item": [
+        {
+          "name": "Create Free URL #2 of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example1.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Create Free URL #3 of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example2.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Create Free URL #4 of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example3.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Create Free URL #5 of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example4.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Free Exceeds Active Limit (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 (active URL limit reached)\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Error message is present\", function () {",
+                  "    pm.expect(json.error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{freeApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example5.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        }
+      ]
+    }
+  ]
+}
