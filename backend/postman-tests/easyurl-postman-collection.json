@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-47a8-9b0c-d1e2f3a4b5c6",
     "name": "easyurl.in - Backend API Tests",
-    "description": "Full regression + feature test suite for the easyurl.in backend.\n\nPREREQUISITES:\n1. Server running locally (default assumes http://localhost:3000 - update the baseUrl variable if different).\n2. Two subscribers must already exist in Postgres:\n   - api_key = 'test-key-123', plan_id = 1 (Free)\n   - api_key = 'pro-test-key-456', plan_id = 2 (Pro)\n\nHOW TO RUN: Use Collection Runner (top right 'Run' button on the collection) and run ALL folders in order with 1 iteration. Later requests depend on variables captured by earlier ones, so order matters - don't run folders individually out of sequence on a fresh DB.\n\nNOTE ON RE-RUNNING: Folder 7 intentionally pushes the Free subscriber to its 5-active-URL cap. Running the whole collection again without resetting will eventually make even Folder 1's create request fail with 403 - that IS the limit working correctly, not a bug. To reset Free's test data between runs, run this in DBeaver:\n\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id = 1);\nDELETE FROM urls WHERE subscriber_id = 1;\n\n(Adjust subscriber_id = 1 if your Free test subscriber has a different id.)",
+    "description": "Full regression + feature test suite for the easyurl.in backend.\n\nPREREQUISITES:\n1. Server running locally (default assumes http://localhost:3000 - update the baseUrl variable if different).\n2. Three subscribers must already exist in Postgres:\n   - api_key = 'test-key-123', plan_id = 1 (Free), trial_end_date = CURRENT_DATE + 30 days (active trial), account_status = 'active' — general Free fixture\n   - api_key = 'pro-test-key-456', plan_id = 2 (Pro), account_status = 'active'\n   - api_key = 'expired-test-key-789', plan_id = 1 (Free), trial_end_date = yesterday (expired trial), account_status = 'active' — used for analytics 403 + redirect 410 tests\n3. Free plan features must include: {\"analytics_requires_active_trial\": true, \"requires_signup_after_trial\": true}\n\nSQL to reset test-key-123 to active trial:\n  UPDATE subscribers SET trial_end_date = CURRENT_DATE + INTERVAL '30 days' WHERE api_key = 'test-key-123';\n\nSQL to create or reset expired-test-key-789 (safe to re-run):\n  INSERT INTO subscribers (api_key, plan_id, trial_end_date)\n  VALUES ('expired-test-key-789', 1, CURRENT_DATE - INTERVAL '1 day')\n  ON CONFLICT (api_key) DO UPDATE SET trial_end_date = CURRENT_DATE - INTERVAL '1 day';\n\nHOW TO RUN: Use Collection Runner (top right 'Run' button on the collection) and run ALL folders in order with 1 iteration. Later requests depend on variables captured by earlier ones, so order matters - don't run folders individually out of sequence on a fresh DB.\n\nNOTE ON RE-RUNNING: Each full run accumulates URLs for the Free and expired-Free subscribers. Run ALL of the following SQL in DBeaver before re-running the collection:\n\n-- 1. Pro subscriber (pro-test-key-456) — accumulates URLs across every run; clear first to avoid hitting the plan cap\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'pro-test-key-456'));\nDELETE FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'pro-test-key-456');\n\n-- 2. Free subscriber (test-key-123) — Folder 7 pushes to the 5-URL cap\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'test-key-123'));\nDELETE FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'test-key-123');\n\n-- 3. Expired-Free subscriber (expired-test-key-789) — Folder 2 creates 1 URL per run, also hits cap after 5 runs\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'expired-test-key-789'));\nDELETE FROM urls WHERE subscriber_id = (SELECT id FROM subscribers WHERE api_key = 'expired-test-key-789');\n\n-- 4. Trial subscribers created by Folder 9\nDELETE FROM clicks WHERE url_id IN (SELECT id FROM urls WHERE subscriber_id IN (SELECT id FROM subscribers WHERE api_key LIKE 'sk_%'));\nDELETE FROM urls WHERE subscriber_id IN (SELECT id FROM subscribers WHERE api_key LIKE 'sk_%');\nDELETE FROM subscribers WHERE api_key LIKE 'sk_%';\n\n-- 5. Redis rate-limit counter (persists 24 hours — only needed if re-running within the same day)\n-- redis-cli -h <host> -p 6379 -a <password> DEL trial_key_count:::1\n\n-- 6. Folder 11 moderation state (before re-running moderation tests)\nDELETE FROM malicious_urls WHERE domain = 'testsafebrowsing.appspot.com';\nDELETE FROM flagged_domains WHERE domain = 'testsafebrowsing.appspot.com';\nDELETE FROM urls WHERE short_code = 'blocked-test';\n-- Then re-seed BOTH prerequisites from Folder 11 before re-running:\n--   INSERT INTO flagged_domains (domain, status) VALUES ('testsafebrowsing.appspot.com', 'pending_review') ON CONFLICT (domain) DO NOTHING;\n--   INSERT INTO urls ... (see Folder 11 description for full blocked-test seed SQL)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -15,7 +15,21 @@
     { "key": "proUrlId1", "value": "", "type": "string" },
     { "key": "proShortCode2", "value": "", "type": "string" },
     { "key": "proUrlId2", "value": "", "type": "string" },
-    { "key": "renameAlias", "value": "", "type": "string" }
+    { "key": "renameAlias", "value": "", "type": "string" },
+    { "key": "trialApiKey", "value": "", "type": "string" },
+    { "key": "trialShortCode", "value": "", "type": "string" },
+    { "key": "testEmail", "value": "", "type": "string" },
+    { "key": "authToken", "value": "", "type": "string" },
+    { "key": "expiredApiKey", "value": "expired-test-key-789", "type": "string" },
+    { "key": "expiredShortCode", "value": "", "type": "string" },
+    { "key": "expiredFreeUrlId", "value": "", "type": "string" },
+    { "key": "cacheTestShortCode", "value": "", "type": "string" },
+    { "key": "cacheTestUrlId", "value": "", "type": "string" },
+    { "key": "renameTestShortCode", "value": "", "type": "string" },
+    { "key": "renameTestUrlId", "value": "", "type": "string" },
+    { "key": "renameTestNewAlias", "value": "", "type": "string" },
+    { "key": "flaggedDomainId", "value": "", "type": "string" },
+    { "key": "adminSecret", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -225,6 +239,75 @@
             "method": "GET",
             "header": [
               { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        },
+        {
+          "name": "Create Short URL (Expired Free)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response has shortCode\", function () {",
+                  "    pm.expect(json.shortCode).to.be.a(\"string\");",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"expiredShortCode\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-api-key", "value": "{{expiredApiKey}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://example.com/expired-test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Get Expired Free URLs (capture expiredFreeUrlId)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const urls = pm.response.json();",
+                  "const match = urls.find((u) => u.short_code === pm.collectionVariables.get(\"expiredShortCode\"));",
+                  "",
+                  "pm.test(\"Found the expired Free URL just created\", function () {",
+                  "    pm.expect(match).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "if (match) pm.collectionVariables.set(\"expiredFreeUrlId\", match.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{expiredApiKey}}", "type": "text" }
             ],
             "url": "{{baseUrl}}/urls"
           }
@@ -650,6 +733,1152 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/shorten"
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Analytics",
+      "description": "Tests analytics and the trial-expired paths. Pro can access their own analytics. An expired-trial Free subscriber is gated on analytics (403) and redirect (410). Ownership mismatch returns 404 (not 403) to avoid leaking which ids exist.\n\nexpiredApiKey ('expired-test-key-789'), expiredShortCode, and expiredFreeUrlId are populated by Folder 2 — run folders in order.",
+      "item": [
+        {
+          "name": "Hit Pro URL #2 Redirect (seed a click for analytics)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 (click recorded for proUrlId2)\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{renameAlias}}"
+          }
+        },
+        {
+          "name": "Pro Gets Own URL Analytics (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response contains totalClicks as a number\", function () {",
+                  "    pm.expect(json.totalClicks).to.be.a(\"number\");",
+                  "});",
+                  "",
+                  "pm.test(\"Response contains retentionDays as a number\", function () {",
+                  "    pm.expect(json.retentionDays).to.be.a(\"number\");",
+                  "});",
+                  "",
+                  "pm.test(\"Response contains all expected breakdown arrays\", function () {",
+                  "    pm.expect(json.clicksOverTime).to.be.an(\"array\");",
+                  "    pm.expect(json.byCountry).to.be.an(\"array\");",
+                  "    pm.expect(json.byCity).to.be.an(\"array\");",
+                  "    pm.expect(json.byDeviceType).to.be.an(\"array\");",
+                  "    pm.expect(json.byBrowser).to.be.an(\"array\");",
+                  "    pm.expect(json.byOs).to.be.an(\"array\");",
+                  "    pm.expect(json.byLanguage).to.be.an(\"array\");",
+                  "    pm.expect(json.byDayOfWeek).to.be.an(\"array\");",
+                  "    pm.expect(json.byHourOfDay).to.be.an(\"array\");",
+                  "});",
+                  "",
+                  "pm.test(\"totalClicks is at least 1 (redirect was hit above)\", function () {",
+                  "    pm.expect(json.totalClicks).to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{proUrlId2}}/analytics"
+          }
+        },
+        {
+          "name": "Expired Free Gets Own URL Analytics - Trial Gate (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 (expired trial gate blocks analytics)\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Error message explains trial requirement\", function () {",
+                  "    pm.expect(json.error).to.be.a(\"string\");",
+                  "    pm.expect(json.error).to.include(\"trial\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{expiredApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{expiredFreeUrlId}}/analytics"
+          }
+        },
+        {
+          "name": "Pro Gets Expired Free's URL Analytics - Ownership Mismatch (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 404 (ownership hidden, not 403)\", function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{expiredFreeUrlId}}/analytics"
+          }
+        },
+        {
+          "name": "Hit Expired URL Redirect (410)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 410 (trial expired, owner not signed up — redirect blocked)\", function () {",
+                  "    pm.response.to.have.status(410);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message is present\", function () {",
+                  "    pm.expect(pm.response.json().error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{expiredShortCode}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Auth Flow",
+      "description": "Tests the full auth lifecycle: POST /trial-key → POST /signup → POST /login → JWT Bearer auth on protected routes.\n\nThis folder is self-contained — it creates its own trial subscriber, so no manual DB setup is needed before running it.\n\nNOTE ON THE REDIRECT 410 GATE: This path is now covered automatically in Folder 8 using the dedicated 'expired-test-key-789' subscriber — no manual DB manipulation needed. See Folder 8 description for the setup SQL.\n\nNOTE ON THE RATE LIMIT (429): POST /trial-key allows max 3 keys per IP per 24 hours. This folder only issues 1, so the 429 path is not exercised automatically. To test it, call POST /trial-key 3 more times from the same IP and confirm the 4th returns 429.",
+      "item": [
+        {
+          "name": "Issue Trial Key (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"apiKey is a string starting with sk_\", function () {",
+                  "    pm.expect(json.apiKey).to.be.a(\"string\");",
+                  "    pm.expect(json.apiKey).to.match(/^sk_/);",
+                  "});",
+                  "",
+                  "pm.test(\"trialEndDate is a string\", function () {",
+                  "    pm.expect(json.trialEndDate).to.be.a(\"string\");",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"trialApiKey\", json.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/trial-key"
+          }
+        },
+        {
+          "name": "Create URL With Trial Key (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201 (trial key accepted by authenticate)\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response contains a shortCode\", function () {",
+                  "    pm.expect(json.shortCode).to.be.a(\"string\");",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"trialShortCode\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{trialApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://trial-test.example.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Redirect Works During Active Trial (302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 (trial active, redirect allowed)\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});",
+                  "",
+                  "pm.test(\"Location header points to the original URL\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"https://trial-test.example.com\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{trialShortCode}}"
+          }
+        },
+        {
+          "name": "Signup - Invalid Email (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 400 (invalid email format)\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message is present\", function () {",
+                  "    pm.expect(pm.response.json().error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{trialApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"notanemail\", \"password\": \"ValidPass123\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/signup"
+          }
+        },
+        {
+          "name": "Signup - Password Too Short (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 400 (password under 8 chars)\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message is present\", function () {",
+                  "    pm.expect(pm.response.json().error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{trialApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"valid@example.com\", \"password\": \"short\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/signup"
+          }
+        },
+        {
+          "name": "Signup - Success (200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"testEmail\", \"testauth\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response contains a JWT (3-part dot-separated string)\", function () {",
+                  "    pm.expect(json.token).to.be.a(\"string\");",
+                  "    pm.expect(json.token.split(\".\").length).to.eql(3);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"authToken\", json.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{trialApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{testEmail}}\", \"password\": \"TestPass123\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/signup"
+          }
+        },
+        {
+          "name": "JWT Bearer - GET /urls Authenticated (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200 (JWT accepted by authenticate middleware)\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Response is an array\", function () {",
+                  "    pm.expect(pm.response.json()).to.be.an(\"array\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        },
+        {
+          "name": "Signup - Already Registered (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 400 (account already has a password set)\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message is present\", function () {",
+                  "    pm.expect(pm.response.json().error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{trialApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{testEmail}}\", \"password\": \"AnotherPass456\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/signup"
+          }
+        },
+        {
+          "name": "Login - Wrong Password (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 401\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test(\"Error is generic — does not name which field failed (prevents email enumeration)\", function () {",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error).to.be.a(\"string\");",
+                  "    pm.expect(error.toLowerCase()).to.not.include(\"email\");",
+                  "    pm.expect(error.toLowerCase()).to.not.include(\"password\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{testEmail}}\", \"password\": \"WrongPassword99\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/login"
+          }
+        },
+        {
+          "name": "Login - Success (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test(\"Response contains a JWT\", function () {",
+                  "    pm.expect(json.token).to.be.a(\"string\");",
+                  "    pm.expect(json.token.split(\".\").length).to.eql(3);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"authToken\", json.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{testEmail}}\", \"password\": \"TestPass123\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/login"
+          }
+        },
+        {
+          "name": "JWT Bearer - Invalid Token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 401 (malformed token rejected)\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer this.is.invalid", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        },
+        {
+          "name": "No Auth Header (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 401 (no credentials at all)\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message present\", function () {",
+                  "    pm.expect(pm.response.json().error).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/urls"
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Redis Cache & Rate Limiting",
+      "description": "Verifies Redis caching for redirects and cache invalidation on mutation.\n\nCache hit vs miss is not distinguishable from HTTP status alone — both return 302. Use redis-cli on the VM to confirm the cache entry after the first redirect:\n  redis-cli -a <password> GET url:<shortCode>\n\nRATE LIMIT: The automated rate-limit path (429) is intentionally NOT included here because each full collection run increments the Redis counter — including Folder 9's /trial-key hit — and the counter persists for 24 hours. Including more hits would break every subsequent run. To test the 429 path manually:\n  1. First reset the counter: redis-cli -h <host> -p 6379 -a <password> DEL trial_key_count:::1\n  2. Call POST /trial-key four times in quick succession — the 4th returns 429.\n  3. Clean up the extra trial subscribers: DELETE FROM subscribers WHERE api_key LIKE 'sk_%';\n  4. Reset the counter again before the next collection run.",
+      "item": [
+        {
+          "name": "Setup: Create URL for Cache-Delete Test (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set(\"cacheTestShortCode\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://cache-delete-test.example.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Setup: Create URL for Cache-Rename Test (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set(\"renameTestShortCode\", json.shortCode);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"https://cache-rename-test.example.com\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Setup: Get Pro URLs (capture cacheTestUrlId and renameTestUrlId)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const urls = pm.response.json();",
+                  "const m1 = urls.find((u) => u.short_code === pm.collectionVariables.get(\"cacheTestShortCode\"));",
+                  "const m2 = urls.find((u) => u.short_code === pm.collectionVariables.get(\"renameTestShortCode\"));",
+                  "",
+                  "pm.test(\"Found both cache test URLs\", function () {",
+                  "    pm.expect(m1).to.not.be.undefined;",
+                  "    pm.expect(m2).to.not.be.undefined;",
+                  "});",
+                  "",
+                  "if (m1) pm.collectionVariables.set(\"cacheTestUrlId\", m1.id);",
+                  "if (m2) pm.collectionVariables.set(\"renameTestUrlId\", m2.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls"
+          }
+        },
+        {
+          "name": "Cache Miss: First Redirect (302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 — cache miss, DB served, entry now cached\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{freeShortCode}}"
+          }
+        },
+        {
+          "name": "Cache Hit: Second Redirect (302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 — cache hit, Redis served (verify via redis-cli GET url:{{freeShortCode}})\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{freeShortCode}}"
+          }
+        },
+        {
+          "name": "Delete Invalidation: Cache the URL (302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 — URL now cached in Redis\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{cacheTestShortCode}}"
+          }
+        },
+        {
+          "name": "Delete Invalidation: Delete the URL (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200 — soft-deleted and cache key invalidated\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "url": "{{baseUrl}}/urls/{{cacheTestUrlId}}"
+          }
+        },
+        {
+          "name": "Delete Invalidation: Redirect Returns 410 (not stale 302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 410 — cache was invalidated on delete, not a stale 302\", function () {",
+                  "    pm.response.to.have.status(410);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{cacheTestShortCode}}"
+          }
+        },
+        {
+          "name": "Rename Invalidation: Cache the URL (302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 302 — URL cached under original short code\", function () {",
+                  "    pm.response.to.have.status(302);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{renameTestShortCode}}"
+          }
+        },
+        {
+          "name": "Rename Invalidation: Rename the URL (200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"renameTestNewAlias\", \"cachetest\" + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200 — renamed and old code cache invalidated\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" },
+              { "key": "x-api-key", "value": "{{proApiKey}}", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"newAlias\": \"{{renameTestNewAlias}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/urls/{{renameTestUrlId}}"
+          }
+        },
+        {
+          "name": "Rename Invalidation: Old Code Returns 404 (not stale 302)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 404 — cache cleared on rename, old code no longer valid\", function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/{{renameTestShortCode}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "11. Moderation & Admin Safety",
+      "description": "Tests for the URL safety pipeline (Google Safe Browsing, malicious_urls, flagged_domains) and admin moderation controls.\n\nPREREQUISITES:\n\n1. Run `npm run cleanup` from the backend directory before starting this folder. It handles all seeding automatically:\n   - Seeds 3 malicious_urls rows for testsafebrowsing.appspot.com (so escalation fires on item 5)\n   - Seeds the blocked-test URL for the redirect test in item 9\n\n2. Set the 'adminSecret' collection variable to match ADMIN_SECRET in your .env (one-time setup).\n\n3. GOOGLE_SAFE_BROWSING_API_KEY must be set in .env — items 1 and 5 make real GSB API calls.\n\nHOW THE ESCALATION SEQUENCE WORKS:\n  cleanup seeds 3 rows -> item 1 (malware.html) hits GSB -> 4th row inserted (no escalation yet)\n  -> item 5 (phishing.html) hits GSB -> 5th row inserted -> escalation fires -> pending_review\n  -> items 6-9 (admin controls) operate on the now-flagged domain\n\nFail-open sanity check (manual only): Remove GOOGLE_SAFE_BROWSING_API_KEY from .env and POST a brand-new URL not in malicious_urls or flagged_domains — it should return 201, never 403.\n\nCLEANUP SQL before re-running this folder:\n  DELETE FROM malicious_urls WHERE domain = 'testsafebrowsing.appspot.com';\n  DELETE FROM flagged_domains WHERE domain = 'testsafebrowsing.appspot.com';\n  DELETE FROM urls WHERE short_code = 'blocked-test';\n  -- Then re-seed blocked-test using the SQL in prerequisite 2 above.",
+      "item": [
+        {
+          "name": "GSB: Malware URL Blocked on First Attempt (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 — malware URL blocked by Safe Browsing pipeline\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message indicates URL is unsafe\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.error).to.include(\"flagged as unsafe\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{proApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"http://testsafebrowsing.appspot.com/s/malware.html\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Admin: Missing Secret Returns 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 401 — no x-admin-secret header\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/admin/flagged-domains"
+          }
+        },
+        {
+          "name": "Admin: Wrong Secret Returns 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 401 — wrong x-admin-secret header\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-secret", "value": "definitely-not-the-right-secret" }
+            ],
+            "url": "{{baseUrl}}/admin/flagged-domains"
+          }
+        },
+        {
+          "name": "Admin: List All Flagged Domains (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Response is an array\", function () {",
+                  "    pm.expect(pm.response.json()).to.be.an(\"array\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-secret", "value": "{{adminSecret}}" }
+            ],
+            "url": "{{baseUrl}}/admin/flagged-domains"
+          }
+        },
+        {
+          "name": "Escalation: Phishing URL Triggers pending_review (403)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No manual steps needed — npm run cleanup seeds 3 malicious_urls rows for this domain.",
+                  "// Item 1 (malware.html) adds a 4th row via GSB (count=4, no escalation).",
+                  "// This item (phishing.html) adds the 5th row via GSB (count=5 >= 5 -> escalation).",
+                  "// After this runs, testsafebrowsing.appspot.com is automatically in pending_review,",
+                  "// which is exactly what items 6-9 need."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 — phishing URL blocked, domain escalated to pending_review\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "",
+                  "pm.test(\"Error indicates URL is unsafe\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.error).to.include(\"flagged as unsafe\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{proApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"http://testsafebrowsing.appspot.com/s/phishing.html\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Domain Under Review: Any URL Blocked (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403 — domain in pending_review blocks all new URLs via fast flagged_domains check\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "",
+                  "pm.test(\"Error indicates domain is under review\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.error).to.include(\"under review\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{proApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"originalUrl\": \"http://testsafebrowsing.appspot.com/s/unwanted.html\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/shorten"
+          }
+        },
+        {
+          "name": "Admin: List Pending Review - Capture flaggedDomainId (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Response has at least one pending_review domain — capture its id\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.be.an(\"array\").and.have.length.above(0);",
+                  "    pm.expect(json[0].status).to.equal(\"pending_review\");",
+                  "    pm.collectionVariables.set(\"flaggedDomainId\", json[0].id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-secret", "value": "{{adminSecret}}" }
+            ],
+            "url": "{{baseUrl}}/admin/flagged-domains?status=pending_review"
+          }
+        },
+        {
+          "name": "Admin: Block Domain (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Domain status updated to blocked\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.equal(\"blocked\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-admin-secret", "value": "{{adminSecret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"blocked\", \"notes\": \"Blocked via automated Postman test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/admin/flagged-domains/{{flaggedDomainId}}"
+          }
+        },
+        {
+          "name": "Redirect: Blocked Domain Returns 410",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// PREREQUISITE: The 'blocked-test' URL must have been seeded BEFORE item 8 ran",
+                  "// (the block cascade only affects urls rows that already exist for the domain).",
+                  "// See the folder prerequisites at the top for the seed SQL.",
+                  "// If this test returns 404, re-seed blocked-test, revert the flagged_domains",
+                  "// status to pending_review, and re-run from item 8."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 410 — blocked URL returns Gone, not a redirect\", function () {",
+                  "    pm.response.to.have.status(410);",
+                  "});",
+                  "",
+                  "pm.test(\"Error indicates security concern\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.error).to.include(\"security concern\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/blocked-test"
           }
         }
       ]

@@ -1,4 +1,5 @@
 import pool from "../config/db";
+import redisClient from "../config/redis";
 import { generateRandomCode } from "../utils/base62";
 
 export interface UrlRow {
@@ -12,6 +13,7 @@ export interface UrlRow {
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
+  domain: string | null;
 }
 
 const MAX_RETRIES = 5;
@@ -26,7 +28,8 @@ function isPostgresError(err: unknown): err is { code: string } {
 export async function createShortUrl(
   originalUrl: string,
   subscriberId: number,
-  customAlias?: string
+  customAlias?: string,
+  domain?: string
 ): Promise<UrlRow> {
   // Custom alias path: single attempt, no retry — a collision means the alias is taken
   if (customAlias !== undefined) {
@@ -37,10 +40,10 @@ export async function createShortUrl(
     }
     try {
       const result = await pool.query<UrlRow>(
-        `INSERT INTO urls (original_url, short_code, subscriber_id, is_custom_alias)
-         VALUES ($1, $2, $3, true)
+        `INSERT INTO urls (original_url, short_code, subscriber_id, is_custom_alias, domain)
+         VALUES ($1, $2, $3, true, $4)
          RETURNING *`,
-        [originalUrl, customAlias, subscriberId]
+        [originalUrl, customAlias, subscriberId, domain ?? null]
       );
       const row = result.rows[0];
       if (!row) throw new Error("INSERT returned no rows");
@@ -61,10 +64,10 @@ export async function createShortUrl(
       // Parameterized query ($1, $2, $3) keeps user input out of the SQL string,
       // preventing SQL injection no matter what originalUrl contains
       const result = await pool.query<UrlRow>(
-        `INSERT INTO urls (original_url, short_code, subscriber_id)
-         VALUES ($1, $2, $3)
+        `INSERT INTO urls (original_url, short_code, subscriber_id, domain)
+         VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [originalUrl, shortCode, subscriberId]
+        [originalUrl, shortCode, subscriberId, domain ?? null]
       );
 
       const row = result.rows[0];
@@ -110,15 +113,17 @@ export async function getUrlById(
   return result.rows[0];
 }
 
-export async function softDeleteUrl(id: number): Promise<void> {
+export async function softDeleteUrl(id: number, shortCode: string): Promise<void> {
   await pool.query(
     "UPDATE urls SET is_active = false, updated_at = NOW() WHERE id = $1",
     [id]
   );
+  await invalidateCachedUrl(shortCode);
 }
 
 export async function updateUrl(
   id: number,
+  shortCode: string,
   updates: { originalUrl?: string; newAlias?: string; reactivate?: boolean }
 ): Promise<UrlRow> {
   const setClauses: string[] = [];
@@ -154,11 +159,41 @@ export async function updateUrl(
     const result = await pool.query<UrlRow>(sql, values);
     const row = result.rows[0];
     if (!row) throw new Error("UPDATE returned no rows");
+    // Invalidate aggressively on any mutation rather than reasoning case-by-case about
+    // which field actually changed — simpler and safer.
+    await invalidateCachedUrl(shortCode);
     return row;
   } catch (err) {
     if (isPostgresError(err) && err.code === UNIQUE_VIOLATION) {
       throw new Error("Alias already taken");
     }
     throw err;
+  }
+}
+
+export async function getCachedUrl(shortCode: string): Promise<UrlRow | null> {
+  try {
+    const cached = await redisClient.get(`url:${shortCode}`);
+    if (cached === null) return null;
+    return JSON.parse(cached) as UrlRow;
+  } catch (err) {
+    console.error("[getCachedUrl] Redis error — treating as cache miss:", err);
+    return null;
+  }
+}
+
+export async function cacheUrl(shortCode: string, urlRow: UrlRow): Promise<void> {
+  try {
+    await redisClient.set(`url:${shortCode}`, JSON.stringify(urlRow), { EX: 900 });
+  } catch (err) {
+    console.error("[cacheUrl] Redis error — skipping cache write:", err);
+  }
+}
+
+export async function invalidateCachedUrl(shortCode: string): Promise<void> {
+  try {
+    await redisClient.del(`url:${shortCode}`);
+  } catch (err) {
+    console.error("[invalidateCachedUrl] Redis error — skipping invalidation:", err);
   }
 }

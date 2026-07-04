@@ -125,5 +125,13 @@ create TABLE IF NOT EXISTS flagged_domains (
 ALTER TABLE plans RENAME COLUMN monthly_url_limit TO active_url_limit;
 
 -- Free plan currently has features = {} (the column default) — fill it in properly
-UPDATE plans SET features = '{"custom_alias": false, "manage_links": false}'::jsonb
+UPDATE plans SET features = '{"custom_alias": false, "manage_links": false, "analytics_requires_active_trial": true}'::jsonb
     WHERE name = 'Free';
+
+    UPDATE plans SET features = features || '{"requires_signup_after_trial": true}'::jsonb
+    WHERE name = 'Free';
+UPDATE plans SET features = features || '{"requires_signup_after_trial": false}'::jsonb
+    WHERE name = 'Pro';
+
+    ALTER TABLE urls ADD COLUMN domain VARCHAR(255);
+CREATE INDEX idx_urls_domain ON urls(domain);

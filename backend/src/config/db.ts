@@ -1,7 +1,14 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+// BIGINT (OID 20) defaults to a string in node-postgres to avoid precision loss above
+// Number.MAX_SAFE_INTEGER (~9 quadrillion). This app's id columns will never realistically
+// approach that range, so parsing BIGINT as a JS number is a deliberate, scale-aware
+// tradeoff applied once here rather than scattering Number() coercions across every file
+// that reads a BIGINT-derived value (id, plan_id, subscriber_id, etc.).
+types.setTypeParser(20, (val) => parseInt(val, 10));
 
 const pool = new Pool({
   host: process.env.DB_HOST,

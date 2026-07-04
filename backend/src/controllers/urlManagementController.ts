@@ -49,7 +49,7 @@ export async function handleDeleteUrl(
 
     // Soft delete (is_active = false) rather than hard delete to preserve click
     // analytics — clicks rows reference url_id via FK and would be lost on hard delete
-    await softDeleteUrl(id);
+    await softDeleteUrl(id, url.short_code);
     res.status(200).json({ message: "URL deactivated successfully" });
   } catch (err) {
     console.error("[handleDeleteUrl] Failed to delete URL:", err);
@@ -120,12 +120,12 @@ export async function handleUpdateUrl(
 
     // Build updates object without explicitly setting undefined properties —
     // exactOptionalPropertyTypes treats { foo: undefined } and {} as different types
-    const updates: Parameters<typeof updateUrl>[1] = {};
+    const updates: Parameters<typeof updateUrl>[2] = {};
     if (typeof originalUrl === "string") updates.originalUrl = originalUrl;
     if (typeof newAlias === "string") updates.newAlias = newAlias;
     if (reactivate === true) updates.reactivate = true;
 
-    const updated = await updateUrl(id, updates);
+    const updated = await updateUrl(id, url.short_code, updates);
 
     res.status(200).json(updated);
   } catch (err) {

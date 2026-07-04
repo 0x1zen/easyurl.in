@@ -1,8 +1,9 @@
 import type { Request, Response } from "express";
-import { createShortUrl } from "../services/urlService";
+import { createShortUrl, getCachedUrl, cacheUrl } from "../services/urlService";
 import type { UrlRow } from "../services/urlService";
 import { recordClick } from "../services/clickService";
-import { checkActiveLimitNotExceeded, checkAliasPermission } from "../services/planService";
+import { checkActiveLimitNotExceeded, checkAliasPermission, checkLinkAccessAllowed } from "../services/planService";
+import { checkUrlSafety, extractDomain } from "../services/moderationService";
 import pool from "../config/db";
 
 export async function handleCreateShortUrl(
@@ -49,10 +50,18 @@ export async function handleCreateShortUrl(
       }
     }
 
+    const safety = await checkUrlSafety(originalUrl);
+    if (!safety.allowed) {
+      res.status(403).json({ error: safety.reason });
+      return;
+    }
+
+    const domain = extractDomain(originalUrl);
     const row = await createShortUrl(
       originalUrl,
       subscriberId,
-      typeof customAlias === "string" ? customAlias : undefined
+      typeof customAlias === "string" ? customAlias : undefined,
+      domain
     );
     const baseUrl = process.env["APP_BASE_URL"] ?? "";
     const shortUrl = `${baseUrl}/${row.short_code}`;
@@ -81,9 +90,26 @@ export async function handleRedirect(
   req: Request,
   res: Response
 ): Promise<void> {
-  const { code } = req.params;
+  const { code } = req.params as { code: string };
 
   try {
+    // Cache hit path: only valid, active, non-expired rows are ever cached,
+    // so skip the is_active and expiry_date checks on a hit.
+    const cached = await getCachedUrl(code);
+    if (cached !== null) {
+      const linkAllowed = await checkLinkAccessAllowed(cached.subscriber_id);
+      if (!linkAllowed) {
+        res.status(410).json({
+          error: "This link is inactive. The owner needs to complete signup to continue using it.",
+        });
+        return;
+      }
+      void recordClick(cached.id, req);
+      res.redirect(302, cached.original_url);
+      return;
+    }
+
+    // Cache miss — query Postgres
     const result = await pool.query<UrlRow>(
       "SELECT * FROM urls WHERE short_code = $1",
       [code]
@@ -103,6 +129,25 @@ export async function handleRedirect(
 
     if (row.expiry_date !== null && new Date(row.expiry_date) < new Date()) {
       res.status(410).json({ error: "This link has expired" });
+      return;
+    }
+
+    if (row.moderation_status === "blocked") {
+      res.status(410).json({ error: "This link has been disabled due to a security concern." });
+      return;
+    }
+
+    // Only cache valid, active, non-expired, approved rows. pending_review rows still
+    // redirect but are not cached — their status may change and caching would serve stale data.
+    if (row.moderation_status === "approved") {
+      await cacheUrl(code, row);
+    }
+
+    const linkAllowed = await checkLinkAccessAllowed(row.subscriber_id);
+    if (!linkAllowed) {
+      res.status(410).json({
+        error: "This link is inactive. The owner needs to complete signup to continue using it.",
+      });
       return;
     }
 

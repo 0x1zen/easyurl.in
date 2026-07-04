@@ -23,10 +23,16 @@ export async function recordClick(urlId: number, req: Request): Promise<void> {
     // undefined means a regular desktop browser
     const deviceType = result.device.type ?? "desktop";
 
+    // Primary language tag only: "en-GB,en;q=0.9" → "en-GB"
+    const acceptLanguage = req.headers["accept-language"];
+    const language = acceptLanguage
+      ? (acceptLanguage.split(",")[0]?.split(";")[0]?.trim() ?? null)
+      : null;
+
     await pool.query(
-      `INSERT INTO clicks (url_id, country, city, device_type, browser, os, referrer)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [urlId, country, city, deviceType, browser, os, referrer]
+      `INSERT INTO clicks (url_id, country, city, device_type, browser, os, referrer, language)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [urlId, country, city, deviceType, browser, os, referrer, language]
     );
   } catch (err) {
     // Never rethrow — click recording is fire-and-forget and must not affect the redirect
