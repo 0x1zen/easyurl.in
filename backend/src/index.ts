@@ -34,8 +34,18 @@ app.get("/health", (_req: Request, res: Response) => {
 
 app.use(authRoutes);
 app.use(urlManagementRoutes);
-app.use(urlRoutes);
 app.use(adminRoutes);
+
+// Explicitly serve known frontend routes BEFORE urlRoutes so GET /:code never
+// intercepts /login, /dashboard, etc.
+app.get(
+  ["/", "/login", "/signup", "/dashboard", "/urls/:id/analytics", "/features", "/pricing"],
+  (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, "../frontend-dist", "index.html"));
+  }
+);
+
+app.use(urlRoutes);
 
 // Catch-all: serves React index.html for all frontend routes (/dashboard, /login, /signup, etc.)
 // so React Router handles client-side routing. Must be LAST so it never intercepts API calls
