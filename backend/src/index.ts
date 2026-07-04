@@ -15,8 +15,8 @@ const PORT = process.env.PORT || 3000;
 // allows the Vite dev server to call this API with the headers our frontend needs.
 app.use(
   cors({
-    origin: process.env.NODE_ENV === "production" 
-      ? "https://easyurl.in" 
+    origin: process.env.NODE_ENV === "production"
+      ? false        // same-origin in production, CORS not needed
       : "http://localhost:5173",
     allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
     credentials: true,
