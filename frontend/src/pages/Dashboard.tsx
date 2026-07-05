@@ -594,6 +594,14 @@ function LinkRow({
 
 const FREE_PLAN_LIMIT = 5;
 
+function normalizeUrl(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  return "https://" + trimmed;
+}
+
 export default function Dashboard() {
   const { token, logout } = useAuth();
   const navigate = useNavigate();
@@ -649,11 +657,20 @@ export default function Dashboard() {
     e.preventDefault();
     const currentToken = token;
     if (!currentToken) return;
+
+    const normalized = normalizeUrl(destUrl);
+    try {
+      new URL(normalized);
+    } catch {
+      setFormError("Please enter a valid URL");
+      return;
+    }
+
     setFormLoading(true);
     setFormError(null);
 
     const body: { originalUrl: string; customAlias?: string } = {
-      originalUrl: destUrl,
+      originalUrl: normalized,
     };
     if (alias.trim()) {
       body.customAlias = alias.trim();

@@ -1,6 +1,7 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { Link, Outlet, Route, Routes, useNavigate, useLocation } from "react-router-dom";
 import { motion, useReducedMotion, type MotionProps } from "framer-motion";
+import { QRCodeSVG } from "qrcode.react";
 import Navbar from "./components/Navbar";
 import ProtectedRoute from "./components/ProtectedRoute";
 import RollingNumber from "./components/RollingNumber";
@@ -62,6 +63,7 @@ function scrollAnim(
 
 interface ShortenResult {
   shortUrl: string;
+  originalUrl: string;
   expiresAt: string;
   message: string;
 }
@@ -72,6 +74,14 @@ interface AnonymousShortenResponse {
   originalUrl: string;
   expiresAt: string;
   message: string;
+}
+
+function normalizeUrl(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  return "https://" + trimmed;
 }
 
 function Landing() {
@@ -107,8 +117,9 @@ function Landing() {
 
   function handleShorten(): void {
     setShortenError(null);
+    const normalized = normalizeUrl(shortenUrl);
     try {
-      new URL(shortenUrl);
+      new URL(normalized);
     } catch {
       setShortenError("Please enter a valid URL");
       return;
@@ -116,11 +127,12 @@ function Landing() {
     setShortenLoading(true);
     apiRequest<AnonymousShortenResponse>("/shorten/anonymous", {
       method: "POST",
-      body: { originalUrl: shortenUrl },
+      body: { originalUrl: normalized },
     })
       .then((data) => {
         setShortenResult({
           shortUrl: data.shortUrl,
+          originalUrl: data.originalUrl,
           expiresAt: data.expiresAt,
           message: data.message,
         });
@@ -141,6 +153,15 @@ function Landing() {
         setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {});
+  }
+
+  function handleShare(): void {
+    if (!shortenResult) return;
+    if (navigator.share) {
+      navigator.share({ url: shortenResult.shortUrl }).catch(() => {});
+    } else {
+      handleCopy();
+    }
   }
 
   return (
@@ -172,33 +193,92 @@ function Landing() {
             <p className="shorten-bar-error">{shortenError}</p>
           )}
 
-          {shortenResult !== null && (
-            <div className="card shorten-result-card">
-              <div className="shorten-result-url-row">
-                <a
-                  href={shortenResult.shortUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="shorten-result-link"
-                >
-                  {shortenResult.shortUrl}
-                </a>
-                <button
-                  type="button"
-                  className="shorten-result-copy-btn"
-                  onClick={handleCopy}
-                >
-                  {copied ? "Copied!" : "Copy"}
-                </button>
-              </div>
-              <p className="shorten-result-expiry">
-                ⚠ This link expires in 24 hours
-              </p>
-              <Link to="/signup" className="shorten-result-cta">
-                Sign up for permanent links and analytics →
-              </Link>
-            </div>
-          )}
+          {shortenResult !== null && (() => {
+            let destHost = shortenResult.originalUrl;
+            try { destHost = new URL(shortenResult.originalUrl).hostname; } catch { /* keep */ }
+            return (
+              <motion.div
+                className="sr-card"
+                initial={noMotion ? false : { opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
+              >
+                {/* Success header */}
+                <div className="sr-header">
+                  <span className="sr-check" aria-hidden="true">
+                    <svg width={16} height={16} viewBox="0 0 16 16" fill="none">
+                      <path d="M3 8l3.5 3.5L13 4.5" stroke="#177049" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span className="sr-header-text">Your short link is ready</span>
+                </div>
+
+                {/* Body */}
+                <div className="sr-body">
+                  <div className="sr-left">
+                    <p className="sr-label">SHORT LINK</p>
+                    <div className="sr-link-row">
+                      <a
+                        href={shortenResult.shortUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="sr-link"
+                      >
+                        {shortenResult.shortUrl}
+                      </a>
+                      <button type="button" className="btn sr-copy-btn" onClick={handleCopy}>
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <rect x="9" y="9" width="13" height="13" rx="2" />
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
+                        {copied ? "Copied ✓" : "Copy"}
+                      </button>
+                    </div>
+                    <div className="sr-destination">
+                      <img
+                        src={`https://www.google.com/s2/favicons?domain=${destHost}&sz=32`}
+                        width={14} height={14} alt="" aria-hidden="true"
+                      />
+                      <span>redirects to {destHost}</span>
+                    </div>
+                    <div className="sr-actions">
+                      <a href={shortenResult.shortUrl} target="_blank" rel="noreferrer" className="sr-action-btn">
+                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                        Visit
+                      </a>
+                      <button type="button" className="sr-action-btn" onClick={handleShare}>
+                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                          <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                        Share
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="sr-qr">
+                    <div className="sr-qr-tile">
+                      <QRCodeSVG value={shortenResult.shortUrl} size={112} />
+                    </div>
+                    <span className="sr-qr-caption">Scan QR</span>
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <div className="sr-footer">
+                  <span className="sr-expiry-pill">⏱ Expires in 24 hours</span>
+                  <Link to="/signup" className="sr-cta">
+                    Sign up for permanent links + analytics →
+                  </Link>
+                </div>
+              </motion.div>
+            );
+          })()}
 
           <div className="trust-strip">
             <div className="stats-card">
