@@ -91,6 +91,7 @@ function Landing() {
   const [shortenLoading, setShortenLoading] = useState(false);
   const [shortenError, setShortenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const [stats, setStats] = useState({ linksCreated: 0, clicksTracked: 0 });
 
   useEffect(() => {
@@ -117,6 +118,7 @@ function Landing() {
 
   function handleShorten(): void {
     setShortenError(null);
+    setShowQr(false);
     const normalized = normalizeUrl(shortenUrl);
     try {
       new URL(normalized);
@@ -262,10 +264,28 @@ function Landing() {
                   </div>
 
                   <div className="sr-qr">
-                    <div className="sr-qr-tile">
-                      <QRCodeSVG value={shortenResult.shortUrl} size={112} />
-                    </div>
-                    <span className="sr-qr-caption">Scan QR</span>
+                    {showQr ? (
+                      <>
+                        <div className="sr-qr-tile">
+                          <QRCodeSVG value={shortenResult.shortUrl} size={112} />
+                        </div>
+                        <span className="sr-qr-caption">Scan QR</span>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="sr-qr-toggle"
+                        onClick={() => setShowQr(true)}
+                      >
+                        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <rect x="3" y="3" width="7" height="7" rx="1" />
+                          <rect x="14" y="3" width="7" height="7" rx="1" />
+                          <rect x="3" y="14" width="7" height="7" rx="1" />
+                          <rect x="14" y="14" width="4" height="4" rx="0.5" />
+                        </svg>
+                        Show QR
+                      </button>
+                    )}
                   </div>
                 </div>
 

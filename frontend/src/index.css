@@ -433,6 +433,27 @@ p {
   font-size: 11px;
   color: var(--color-text-muted);
 }
+.sr-qr-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 132px;
+  height: 132px;
+  border: 1px dashed var(--color-border-button);
+  border-radius: 10px;
+  background: #fafbfc;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.sr-qr-toggle:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
 
 /* 4 — Footer */
 .sr-footer {
