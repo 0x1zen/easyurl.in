@@ -814,7 +814,7 @@ export default function Dashboard() {
                 <label htmlFor="dest-url">Destination URL</label>
                 <input
                   id="dest-url"
-                  type="url"
+                  type="text"
                   className="input"
                   value={destUrl}
                   onChange={(e) => setDestUrl(e.target.value)}
