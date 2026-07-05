@@ -32,7 +32,7 @@ export async function checkActiveLimitNotExceeded(
 
   // COUNT(*)::int casts bigint to int so pg returns a JS number, not a string
   const countResult = await pool.query<{ count: number }>(
-    "SELECT COUNT(*)::int AS count FROM urls WHERE subscriber_id = $1 AND is_active = true",
+    "SELECT COUNT(*)::int AS count FROM urls WHERE account_id = $1 AND is_active = true",
     [subscriberId]
   );
   const count = countResult.rows[0]?.count ?? 0;

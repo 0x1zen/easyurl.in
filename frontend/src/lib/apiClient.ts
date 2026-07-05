@@ -1,10 +1,19 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
   token?: string;
-  apiKey?: string;
 }
 
 export async function apiRequest<T>(path: string, options?: RequestOptions): Promise<T> {
@@ -16,10 +25,6 @@ export async function apiRequest<T>(path: string, options?: RequestOptions): Pro
     headers["Authorization"] = `Bearer ${options.token}`;
   }
 
-  if (options?.apiKey) {
-    headers["x-api-key"] = options.apiKey;
-  }
-
   const response = await fetch(`${BASE_URL}${path}`, {
     method: options?.method ?? "GET",
     headers,
@@ -28,7 +33,10 @@ export async function apiRequest<T>(path: string, options?: RequestOptions): Pro
 
   if (!response.ok) {
     const data = await response.json() as { error?: string };
-    throw new Error(data.error ?? `Request failed with status ${response.status}`);
+    throw new ApiError(
+      data.error ?? `Request failed with status ${response.status}`,
+      response.status
+    );
   }
 
   return response.json() as Promise<T>;

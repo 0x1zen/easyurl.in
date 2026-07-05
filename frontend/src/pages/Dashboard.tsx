@@ -1,14 +1,10 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { apiRequest } from "../lib/apiClient";
+import { apiRequest, ApiError } from "../lib/apiClient";
 
-// Short URLs are served from the same origin as the API in this setup.
-// In production this would be a separate domain/CDN.
 const SHORT_BASE = import.meta.env.VITE_API_BASE_URL as string;
 
-// Strip protocol so we display "localhost:3000/abc" instead of "http://localhost:3000/abc".
-// In production this becomes "easyurl.in/abc".
 function displayUrl(shortCode: string): string {
   return `${SHORT_BASE.replace(/^https?:\/\//, "")}/${shortCode}`;
 }
@@ -22,6 +18,7 @@ interface UrlRow {
   created_at: string;
   expiry_date: string | null;
   moderation_status: string;
+  click_count: number;
 }
 
 interface ShortenResponse {
@@ -31,13 +28,138 @@ interface ShortenResponse {
   createdAt: string;
 }
 
-// ── StatusBadge ──────────────────────────────────────────────────────────────
+type EditMode = "destination" | "alias";
+
+// ── Inline SVG icons ──────────────────────────────────────────────────────────
+
+function IconCheck() {
+  return (
+    <svg width={11} height={11} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="1.5 6 4.5 9 10.5 3" />
+    </svg>
+  );
+}
+
+function IconPauseBars() {
+  return (
+    <svg width={10} height={10} viewBox="0 0 12 12" aria-hidden="true" fill="currentColor">
+      <rect x="2" y="2" width="3" height="8" rx="0.8" />
+      <rect x="7" y="2" width="3" height="8" rx="0.8" />
+    </svg>
+  );
+}
+
+function IconXMark() {
+  return (
+    <svg width={11} height={11} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M2 2l8 8M10 2L2 10" />
+    </svg>
+  );
+}
+
+
+function IconClipboard() {
+  return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="4" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    </svg>
+  );
+}
+
+function IconBarChart() {
+  return (
+    <svg width={13} height={13} viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+      <rect x="3" y="12" width="5" height="9" rx="1" />
+      <rect x="10" y="7" width="5" height="14" rx="1" />
+      <rect x="17" y="3" width="5" height="18" rx="1" />
+    </svg>
+  );
+}
+
+function IconDotsV() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+      <circle cx="12" cy="5" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="12" cy="19" r="1.8" />
+    </svg>
+  );
+}
+
+function IconPlus() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function IconHamburger() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+      <line x1="3" y1="7" x2="21" y2="7" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="17" x2="21" y2="17" />
+    </svg>
+  );
+}
+
+// ── FaviconTile ───────────────────────────────────────────────────────────────
+
+const FAVICON_COLORS = [
+  "#4f86f7", "#e8556b", "#f5a623", "#2db67d", "#9b51e0", "#0ea5e9",
+];
+
+function faviconColor(host: string): string {
+  const bare = host.replace(/^www\./, "");
+  const sum = bare.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  return FAVICON_COLORS[sum % FAVICON_COLORS.length];
+}
+
+function FaviconTile({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false);
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* invalid URL — show letter fallback */
+  }
+
+  const bare = host.replace(/^www\./, "");
+  const letter = bare.charAt(0).toUpperCase() || "?";
+
+  return (
+    <div className="favicon-tile">
+      {!failed && host.length > 0 ? (
+        <img
+          src={`https://www.google.com/s2/favicons?domain=${host}&sz=64`}
+          width={22}
+          height={22}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ borderRadius: 3 }}
+        />
+      ) : (
+        <span
+          className="favicon-letter"
+          style={{ background: faviconColor(host) }}
+          aria-hidden="true"
+        >
+          {letter}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── StatusBadge ───────────────────────────────────────────────────────────────
 
 function StatusBadge({ url }: { url: UrlRow }) {
   if (url.moderation_status === "blocked") {
     return (
       <span className="status-pill status-pill--blocked">
-        <span className="status-dot" aria-hidden="true" />
+        <span className="status-pill-icon" aria-hidden="true"><IconXMark /></span>
         Blocked
       </span>
     );
@@ -45,26 +167,24 @@ function StatusBadge({ url }: { url: UrlRow }) {
   if (url.is_active) {
     return (
       <span className="status-pill status-pill--active">
-        <span className="status-dot" aria-hidden="true" />
+        <span className="status-pill-icon" aria-hidden="true"><IconCheck /></span>
         Active
       </span>
     );
   }
   return (
     <span className="status-pill status-pill--paused">
-      <span className="status-dot" aria-hidden="true" />
+      <span className="status-pill-icon" aria-hidden="true"><IconPauseBars /></span>
       Paused
     </span>
   );
 }
 
-// ── LinkRow ──────────────────────────────────────────────────────────────────
+// ── LinkRow ───────────────────────────────────────────────────────────────────
 
 interface LinkRowProps {
   url: UrlRow;
-  isPro: boolean;
   token: string | null;
-  onDelete: (id: number) => void;
   onUpdate: (updated: UrlRow) => void;
   isMenuOpen: boolean;
   onMenuToggle: () => void;
@@ -73,9 +193,7 @@ interface LinkRowProps {
 
 function LinkRow({
   url,
-  isPro,
   token,
-  onDelete,
   onUpdate,
   isMenuOpen,
   onMenuToggle,
@@ -85,11 +203,21 @@ function LinkRow({
   const [rowError, setRowError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
+  const [editMode, setEditMode] = useState<EditMode | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
 
-  // id === 0 is a sentinel for optimistically-added rows whose real id is pending
-  // a background sync — analytics link and overflow menu are disabled until resolved.
   const isConfirmed = url.id > 0;
   const fullShortUrl = `${SHORT_BASE}/${url.short_code}`;
+
+  let destHost = url.original_url;
+  try {
+    destHost = new URL(url.original_url).hostname;
+  } catch {
+    /* keep full string if URL parse fails */
+  }
 
   function handleCopy(): void {
     navigator.clipboard
@@ -101,10 +229,52 @@ function LinkRow({
       .catch(() => {});
   }
 
+  function startEdit(mode: EditMode): void {
+    setConfirmDeactivate(false);
+    setEditMode(mode);
+    setEditValue(mode === "destination" ? url.original_url : url.short_code);
+    setEditError(null);
+    onMenuClose();
+  }
+
+  function cancelEdit(): void {
+    setEditMode(null);
+    setEditValue("");
+    setEditError(null);
+  }
+
+  function handleSaveEdit(): void {
+    if (!token || !isConfirmed || editMode === null) return;
+    const mode = editMode;
+    const trimmed = editValue.trim();
+    if (!trimmed) return;
+    setEditLoading(true);
+    setEditError(null);
+    const body =
+      mode === "destination"
+        ? { originalUrl: trimmed }
+        : { newAlias: trimmed };
+    apiRequest<UrlRow>(`/urls/${url.id}`, { method: "PATCH", token, body })
+      .then((updated) => {
+        onUpdate(updated);
+        setEditMode(null);
+        setEditValue("");
+      })
+      .catch((err: unknown) => {
+        if (mode === "alias" && err instanceof ApiError && err.status === 409) {
+          setEditError("This alias is already taken");
+        } else {
+          setEditError(err instanceof Error ? err.message : "Failed to save");
+        }
+      })
+      .finally(() => setEditLoading(false));
+  }
+
   function handleDeactivate(): void {
     if (!token || !isConfirmed) return;
     setRowLoading(true);
     setRowError(null);
+    setConfirmDeactivate(false);
     apiRequest<{ message: string }>(`/urls/${url.id}`, { method: "DELETE", token })
       .then(() => onUpdate({ ...url, is_active: false }))
       .catch((err: unknown) => {
@@ -129,43 +299,36 @@ function LinkRow({
       .finally(() => setRowLoading(false));
   }
 
-  function handleDelete(): void {
-    if (!token || !isConfirmed) return;
-    setRowLoading(true);
-    setRowError(null);
-    apiRequest<{ message: string }>(`/urls/${url.id}`, { method: "DELETE", token })
-      .then(() => onDelete(url.id))
-      .catch((err: unknown) => {
-        setRowError(err instanceof Error ? err.message : "Failed to delete");
-      })
-      .finally(() => setRowLoading(false));
-  }
-
   return (
     <div className="link-row">
       <div className="link-row-grid">
-        {/* Link column */}
+        {/* Link column — favicon tile + short link + hostname */}
         <div className="link-col-link">
-          <div className="link-short-row">
-            <a
-              href={fullShortUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="link-short-text"
-            >
-              {displayUrl(url.short_code)}
-            </a>
-            <button type="button" className="copy-btn" onClick={handleCopy}>
-              {copied ? "Copied!" : "Copy"}
-            </button>
+          <FaviconTile url={url.original_url} />
+          <div className="link-col-link-text">
+            <div className="link-short-row">
+              <a
+                href={fullShortUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="link-short-text"
+              >
+                {displayUrl(url.short_code)}
+              </a>
+              <button type="button" className="copy-btn" onClick={handleCopy}>
+                <IconClipboard />
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+            <p className="link-dest" title={url.original_url}>
+              {destHost}
+            </p>
           </div>
-          <p className="link-dest" title={url.original_url}>
-            {url.original_url}
-          </p>
         </div>
 
-        {/* Clicks — not yet aggregated in UrlRow; populates once analytics endpoint exposes it */}
-        <div className="link-col-clicks">—</div>
+        <div className="link-col-clicks">
+          {url.click_count.toLocaleString()}
+        </div>
 
         {/* Status */}
         <div className="link-col-status">
@@ -179,10 +342,16 @@ function LinkRow({
               to={`/urls/${url.id}/analytics`}
               className="row-analytics-btn"
             >
+              <span className="row-analytics-icon" aria-hidden="true">
+                <IconBarChart />
+              </span>
               Analytics
             </Link>
           ) : (
             <span className="row-analytics-btn row-analytics-btn--pending">
+              <span className="row-analytics-icon" aria-hidden="true">
+                <IconBarChart />
+              </span>
               Analytics
             </span>
           )}
@@ -201,57 +370,218 @@ function LinkRow({
                 onMenuToggle();
               }}
             >
-              ⋯
+              <IconDotsV />
             </button>
-
-            {isMenuOpen && buttonRect !== null && (
-              <div
-                className="overflow-menu"
-                role="menu"
-                style={{
-                  top: buttonRect.bottom + 4,
-                  right: window.innerWidth - buttonRect.right,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {url.is_active ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="overflow-menu-item"
-                    disabled={!isPro || rowLoading}
-                    onClick={() => { handleDeactivate(); onMenuClose(); }}
-                  >
-                    Deactivate
-                    {!isPro && <span className="overflow-menu-lock">🔒 Pro</span>}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="overflow-menu-item"
-                    disabled={!isPro || rowLoading}
-                    onClick={() => { handleReactivate(); onMenuClose(); }}
-                  >
-                    Reactivate
-                    {!isPro && <span className="overflow-menu-lock">🔒 Pro</span>}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="overflow-menu-item overflow-menu-item--danger"
-                  disabled={!isPro || rowLoading}
-                  onClick={() => { handleDelete(); onMenuClose(); }}
-                >
-                  Delete
-                  {!isPro && <span className="overflow-menu-lock">🔒 Pro</span>}
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </div>
+
+      {/* ── Mobile card (hidden on desktop via CSS) ── */}
+      <div className="link-card-mobile">
+        <div className="link-card-top">
+          <FaviconTile url={url.original_url} />
+          <div className="link-card-text">
+            <a
+              href={fullShortUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="link-short-text"
+            >
+              {displayUrl(url.short_code)}
+            </a>
+            <p className="link-dest" title={url.original_url}>{destHost}</p>
+          </div>
+          <div className="link-card-status">
+            <StatusBadge url={url} />
+          </div>
+        </div>
+
+        <div className="link-card-clicks">
+          <span className="link-card-clicks-icon" aria-hidden="true"><IconBarChart /></span>
+          <strong className="link-card-clicks-count">{url.click_count.toLocaleString()}</strong>
+          <span className="link-card-clicks-label">clicks</span>
+        </div>
+
+        <div className="link-card-actions">
+          <button type="button" className="link-card-btn" onClick={handleCopy}>
+            <IconClipboard />
+            {copied ? "Copied!" : "Copy"}
+          </button>
+          {isConfirmed ? (
+            <Link
+              to={`/urls/${url.id}/analytics`}
+              className="link-card-btn link-card-btn--analytics"
+            >
+              <IconBarChart />
+              Analytics
+            </Link>
+          ) : (
+            <span className="link-card-btn link-card-btn--analytics link-card-btn--disabled">
+              <IconBarChart />
+              Analytics
+            </span>
+          )}
+          <button
+            type="button"
+            className="link-card-overflow-btn"
+            aria-label="More actions"
+            disabled={rowLoading || !isConfirmed}
+            onClick={(e) => {
+              setButtonRect(e.currentTarget.getBoundingClientRect());
+              e.stopPropagation();
+              onMenuToggle();
+            }}
+          >
+            <IconDotsV />
+          </button>
+        </div>
+      </div>
+
+      {/* Overflow menu popup — shared between desktop + mobile triggers */}
+      {isMenuOpen && buttonRect !== null && (
+        <div
+          className="overflow-menu"
+          role="menu"
+          style={{
+            top: buttonRect.bottom + 4,
+            right: Math.max(8, window.innerWidth - buttonRect.right),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {url.is_active ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item"
+                disabled={rowLoading}
+                onClick={() => startEdit("destination")}
+              >
+                Edit destination
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item"
+                disabled={rowLoading}
+                onClick={() => startEdit("alias")}
+              >
+                Rename alias
+              </button>
+              <div className="overflow-menu-divider" aria-hidden="true" />
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item overflow-menu-item--danger"
+                disabled={rowLoading}
+                onClick={() => {
+                  setEditMode(null);
+                  setConfirmDeactivate(true);
+                  onMenuClose();
+                }}
+              >
+                Deactivate link
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item"
+                disabled={rowLoading}
+                onClick={() => {
+                  handleReactivate();
+                  onMenuClose();
+                }}
+              >
+                Reactivate
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item"
+                disabled={rowLoading}
+                onClick={() => startEdit("destination")}
+              >
+                Edit destination
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="overflow-menu-item"
+                disabled={rowLoading}
+                onClick={() => startEdit("alias")}
+              >
+                Rename alias
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Deactivation confirmation */}
+      {confirmDeactivate && (
+        <div className="link-row-inline">
+          <p className="link-row-inline-text">
+            Deactivate this link? Visitors will get a 410 error until you reactivate it.
+          </p>
+          <div className="link-row-edit-row">
+            <button
+              type="button"
+              className="btn btn-danger link-row-action-btn"
+              disabled={rowLoading}
+              onClick={handleDeactivate}
+            >
+              {rowLoading ? "Deactivating…" : "Yes, deactivate"}
+            </button>
+            <button
+              type="button"
+              className="link-row-cancel-btn"
+              onClick={() => setConfirmDeactivate(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Inline edit form */}
+      {editMode !== null && (
+        <div className="link-row-inline">
+          <p className="link-row-inline-text">
+            {editMode === "destination" ? "New destination URL" : "New alias"}
+          </p>
+          {editError !== null && <p className="form-error">{editError}</p>}
+          <div className="link-row-edit-row">
+            <input
+              type={editMode === "destination" ? "url" : "text"}
+              className="input link-row-edit-input"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              placeholder={
+                editMode === "destination" ? "https://…" : "my-custom-slug"
+              }
+              autoFocus
+            />
+            <button
+              type="button"
+              className="btn link-row-action-btn"
+              disabled={editLoading || editValue.trim().length === 0}
+              onClick={handleSaveEdit}
+            >
+              {editLoading ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="link-row-cancel-btn"
+              onClick={cancelEdit}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {rowError !== null && (
         <p className="link-row-error">{rowError}</p>
@@ -261,6 +591,8 @@ function LinkRow({
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
+
+const FREE_PLAN_LIMIT = 5;
 
 export default function Dashboard() {
   const { token, logout } = useAuth();
@@ -276,14 +608,8 @@ export default function Dashboard() {
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // null = no menu open; any other value = the id of the row whose menu is open
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
-
-  // TODO: replace with data from a /me endpoint when available.
-  // Currently derived from whether any existing link used a custom alias (a Pro-only feature).
-  // Risk: a Pro user with no custom-alias links yet will see Free-plan UI until they create one.
-  const isPro = urls.some((u) => u.is_custom_alias);
-  const activeCount = urls.filter((u) => u.is_active).length;
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     const currentToken = token;
@@ -298,8 +624,6 @@ export default function Dashboard() {
       .finally(() => setLoadingUrls(false));
   }, [token]);
 
-  // Close any open overflow menu when the user clicks anywhere outside it.
-  // stopPropagation on the ⋯ button and dropdown prevents those clicks from reaching here.
   useEffect(() => {
     if (openMenuId === null) return;
     function handleDocClick() {
@@ -331,7 +655,7 @@ export default function Dashboard() {
     const body: { originalUrl: string; customAlias?: string } = {
       originalUrl: destUrl,
     };
-    if (isPro && alias.trim()) {
+    if (alias.trim()) {
       body.customAlias = alias.trim();
     }
 
@@ -341,37 +665,33 @@ export default function Dashboard() {
       body,
     })
       .then((data) => {
-        // POST /shorten returns only { shortUrl, shortCode, originalUrl, createdAt }
-        // — not the full UrlRow (missing id, moderation_status, etc.). We prepend a
-        // placeholder (id=0) for instant UI feedback, then sync in the background to
-        // replace it with the real row including the server-assigned id.
         const placeholder: UrlRow = {
           id: 0,
           original_url: data.originalUrl,
           short_code: data.shortCode,
           is_active: true,
-          is_custom_alias: isPro && alias.trim().length > 0,
+          is_custom_alias: alias.trim().length > 0,
           created_at: data.createdAt,
           expiry_date: null,
           moderation_status: "approved",
+          click_count: 0,
         };
         setUrls((prev) => [placeholder, ...prev]);
         closeForm();
-        // Background sync — replaces placeholder with real row once id is available
         apiRequest<UrlRow[]>("/urls", { token: currentToken })
           .then(setUrls)
           .catch(() => {});
       })
       .catch((err: unknown) => {
-        setFormError(
-          err instanceof Error ? err.message : "Something went wrong"
-        );
+        if (err instanceof ApiError && err.status === 409) {
+          setFormError("This alias is already taken");
+        } else if (err instanceof ApiError && err.status === 400) {
+          setFormError(err.message);
+        } else {
+          setFormError(err instanceof Error ? err.message : "Something went wrong");
+        }
       })
       .finally(() => setFormLoading(false));
-  }
-
-  function handleDeleteUrl(id: number): void {
-    setUrls((prev) => prev.filter((u) => u.id !== id));
   }
 
   function handleUpdateUrl(updated: UrlRow): void {
@@ -384,16 +704,15 @@ export default function Dashboard() {
       <header className="dash-header">
         <div className="dash-header-inner">
           <Link to="/" className="navbar-brand">
-            <span className="navbar-logo-mark" aria-hidden="true">e</span>
+            <img src="https://res.cloudinary.com/dwokx2ugh/image/upload/v1783216133/favicon-48_zot5eo.png" width={28} height={28} alt="" className="navbar-logo-mark" />
             <span className="navbar-wordmark">
               easyurl<span className="navbar-tld">.in</span>
             </span>
           </Link>
 
           <div className="dash-header-right">
-            <span className="dash-plan-badge">
-              {isPro ? "Pro plan" : "Free plan"}
-            </span>
+            {/* Desktop: badge + divider + avatar + logout */}
+            <span className="dash-plan-badge">Free plan</span>
             <span className="dash-header-sep" aria-hidden="true" />
             <span className="dash-avatar" aria-label="Account">A</span>
             <button
@@ -403,28 +722,67 @@ export default function Dashboard() {
             >
               Log out
             </button>
+            {/* Mobile: hamburger toggle */}
+            <button
+              type="button"
+              className="dash-hamburger-btn"
+              aria-label="Open menu"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMobileMenuOpen((o) => !o);
+              }}
+            >
+              <IconHamburger />
+            </button>
           </div>
         </div>
+
+        {/* Mobile dropdown */}
+        {mobileMenuOpen && (
+          <div
+            className="dash-mobile-menu"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="dash-plan-badge">Free plan</span>
+            <button
+              type="button"
+              className="dash-logout-btn"
+              onClick={handleLogout}
+            >
+              Log out
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Body */}
       <main className="dash-body">
         {/* Page-level header row */}
         <div className="dash-page-header">
-          <div>
+          <div className="dash-heading-group">
             <h1 className="dash-heading">My Links</h1>
-            {!isPro && (
-              <p className="dash-subtitle">
-                {activeCount} of 5 links used on the Free plan
-              </p>
-            )}
+            {/* Mobile-only plan pill next to heading */}
+            <span className="dash-mobile-plan-pill">Free plan</span>
           </div>
+          {/* Mobile-only subtitle */}
+          {!loadingUrls && (
+            <p className="dash-links-subtitle">
+              {urls.length} of {FREE_PLAN_LIMIT} link{urls.length !== 1 ? "s" : ""} used
+            </p>
+          )}
           <button
             type="button"
             className="btn dash-new-link-btn"
             onClick={() => (formOpen ? closeForm() : setFormOpen(true))}
           >
-            {formOpen ? "Cancel" : "+ New Link"}
+            {formOpen ? (
+              "Cancel"
+            ) : (
+              <>
+                <IconPlus />
+                New Link
+              </>
+            )}
           </button>
         </div>
 
@@ -450,10 +808,8 @@ export default function Dashboard() {
 
               <div className="form-group">
                 <label htmlFor="alias">
-                  Custom Alias
-                  {!isPro && (
-                    <span className="create-alias-lock"> 🔒 Pro only</span>
-                  )}
+                  Custom Alias{" "}
+                  <span className="create-alias-hint">(optional)</span>
                 </label>
                 <input
                   id="alias"
@@ -461,12 +817,7 @@ export default function Dashboard() {
                   className="input"
                   value={alias}
                   onChange={(e) => setAlias(e.target.value)}
-                  disabled={!isPro}
-                  placeholder={
-                    isPro
-                      ? "my-custom-slug"
-                      : "Upgrade to Pro to use custom aliases"
-                  }
+                  placeholder="my-custom-slug"
                 />
               </div>
 
@@ -503,9 +854,7 @@ export default function Dashboard() {
                 <LinkRow
                   key={url.short_code}
                   url={url}
-                  isPro={isPro}
                   token={token}
-                  onDelete={handleDeleteUrl}
                   onUpdate={handleUpdateUrl}
                   isMenuOpen={openMenuId === url.id}
                   onMenuToggle={() =>
@@ -518,13 +867,9 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Upsell (free users only, shown once links are loaded) */}
-        {!isPro && !loadingUrls && (
+        {!loadingUrls && (
           <p className="dash-upsell">
-            Need more than 5 links or detailed analytics?{" "}
-            <Link to="/#pricing" className="dash-upsell-link">
-              Upgrade to Pro →
-            </Link>
+            Need more links? Contact us at rajdubalwork@gmail.com
           </p>
         )}
       </main>

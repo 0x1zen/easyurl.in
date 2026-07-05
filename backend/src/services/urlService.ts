@@ -1,12 +1,21 @@
+import type { Request } from "express";
+import geoip from "geoip-lite";
+import { UAParser } from "ua-parser-js";
 import pool from "../config/db";
 import redisClient from "../config/redis";
 import { generateRandomCode } from "../utils/base62";
+import { extractDomain } from "./moderationService";
 
 export interface UrlRow {
   id: number;
   original_url: string;
   short_code: string;
-  subscriber_id: number;
+  account_id: number | null;
+  is_anonymous: boolean;
+  created_by_ip: string | null;
+  created_by_browser: string | null;
+  created_by_device: string | null;
+  created_by_country: string | null;
   is_custom_alias: boolean;
   moderation_status: string;
   expiry_date: Date | null;
@@ -14,6 +23,10 @@ export interface UrlRow {
   created_at: Date;
   updated_at: Date;
   domain: string | null;
+}
+
+export interface UrlRowWithCount extends UrlRow {
+  click_count: number;
 }
 
 const MAX_RETRIES = 5;
@@ -27,7 +40,7 @@ function isPostgresError(err: unknown): err is { code: string } {
 
 export async function createShortUrl(
   originalUrl: string,
-  subscriberId: number,
+  accountId: number,
   customAlias?: string,
   domain?: string
 ): Promise<UrlRow> {
@@ -40,10 +53,10 @@ export async function createShortUrl(
     }
     try {
       const result = await pool.query<UrlRow>(
-        `INSERT INTO urls (original_url, short_code, subscriber_id, is_custom_alias, domain)
+        `INSERT INTO urls (original_url, short_code, account_id, is_custom_alias, domain)
          VALUES ($1, $2, $3, true, $4)
          RETURNING *`,
-        [originalUrl, customAlias, subscriberId, domain ?? null]
+        [originalUrl, customAlias, accountId, domain ?? null]
       );
       const row = result.rows[0];
       if (!row) throw new Error("INSERT returned no rows");
@@ -64,10 +77,10 @@ export async function createShortUrl(
       // Parameterized query ($1, $2, $3) keeps user input out of the SQL string,
       // preventing SQL injection no matter what originalUrl contains
       const result = await pool.query<UrlRow>(
-        `INSERT INTO urls (original_url, short_code, subscriber_id, domain)
+        `INSERT INTO urls (original_url, short_code, account_id, domain)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [originalUrl, shortCode, subscriberId, domain ?? null]
+        [originalUrl, shortCode, accountId, domain ?? null]
       );
 
       const row = result.rows[0];
@@ -93,11 +106,73 @@ export async function createShortUrl(
   throw new Error("Unreachable");
 }
 
+export async function createAnonymousShortUrl(
+  originalUrl: string,
+  ip: string,
+  req: Request
+): Promise<UrlRow> {
+  const ua = req.headers["user-agent"] ?? "";
+  const parser = new UAParser(ua);
+  const browser = parser.getBrowser().name ?? "Unknown";
+  const device = parser.getDevice().type ?? "desktop";
+  const country = geoip.lookup(ip)?.country ?? null;
+  const domain = extractDomain(originalUrl);
+  const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const shortCode = generateRandomCode();
+
+    try {
+      const result = await pool.query<UrlRow>(
+        `INSERT INTO urls (
+           original_url, short_code, domain,
+           account_id, is_anonymous,
+           created_by_ip, created_by_browser, created_by_device, created_by_country,
+           expiry_date, moderation_status, is_active
+         )
+         VALUES ($1, $2, $3, NULL, true, $4, $5, $6, $7, $8, 'approved', true)
+         RETURNING *`,
+        [originalUrl, shortCode, domain, ip, browser, device, country, expiry]
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("INSERT returned no rows");
+
+      // Log for IP-based rate limiting
+      await pool.query(
+        "INSERT INTO anonymous_url_creation_log (ip_address, short_code) VALUES ($1, $2)",
+        [ip, shortCode]
+      );
+
+      return row;
+    } catch (err) {
+      if (isPostgresError(err) && err.code === UNIQUE_VIOLATION) {
+        if (attempt === MAX_RETRIES) {
+          throw new Error(
+            `Failed to generate a unique short code after ${MAX_RETRIES} attempts`
+          );
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error("Unreachable");
+}
+
 export async function getUrlsForSubscriber(
   subscriberId: number
-): Promise<UrlRow[]> {
-  const result = await pool.query<UrlRow>(
-    "SELECT * FROM urls WHERE subscriber_id = $1 ORDER BY created_at DESC",
+): Promise<UrlRowWithCount[]> {
+  const result = await pool.query<UrlRowWithCount>(
+    `SELECT u.*, COALESCE(c.click_count, 0)::int AS click_count
+     FROM urls u
+     LEFT JOIN (
+       SELECT url_id, COUNT(*)::int AS click_count
+       FROM clicks
+       GROUP BY url_id
+     ) c ON c.url_id = u.id
+     WHERE u.account_id = $1
+     ORDER BY u.created_at DESC`,
     [subscriberId]
   );
   return result.rows;
@@ -125,7 +200,17 @@ export async function updateUrl(
   id: number,
   shortCode: string,
   updates: { originalUrl?: string; newAlias?: string; reactivate?: boolean }
-): Promise<UrlRow> {
+): Promise<UrlRowWithCount> {
+  // Fetch the current destination before the update so we can record the change
+  let currentOriginalUrl: string | null = null;
+  if (updates.originalUrl !== undefined) {
+    const currentResult = await pool.query<{ original_url: string }>(
+      "SELECT original_url FROM urls WHERE id = $1",
+      [id]
+    );
+    currentOriginalUrl = currentResult.rows[0]?.original_url ?? null;
+  }
+
   const setClauses: string[] = [];
   const values: unknown[] = [];
   let paramIndex = 1;
@@ -162,7 +247,30 @@ export async function updateUrl(
     // Invalidate aggressively on any mutation rather than reasoning case-by-case about
     // which field actually changed — simpler and safer.
     await invalidateCachedUrl(shortCode);
-    return row;
+
+    // Record the destination change if the URL was actually different
+    if (
+      updates.originalUrl !== undefined &&
+      currentOriginalUrl !== null &&
+      updates.originalUrl !== currentOriginalUrl
+    ) {
+      try {
+        await pool.query(
+          `INSERT INTO url_destination_changes (url_id, old_url, new_url)
+           VALUES ($1, $2, $3)`,
+          [id, currentOriginalUrl, updates.originalUrl]
+        );
+      } catch (err) {
+        console.error("[updateUrl] Failed to log destination change:", err);
+      }
+    }
+
+    const countResult = await pool.query<{ click_count: number }>(
+      "SELECT COUNT(*)::int AS click_count FROM clicks WHERE url_id = $1",
+      [id]
+    );
+    const click_count = countResult.rows[0]?.click_count ?? 0;
+    return { ...row, click_count };
   } catch (err) {
     if (isPostgresError(err) && err.code === UNIQUE_VIOLATION) {
       throw new Error("Alias already taken");

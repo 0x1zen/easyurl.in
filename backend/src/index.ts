@@ -4,12 +4,15 @@ import type { Request, Response } from "express";
 import cors from "cors";
 import redisClient from "./config/redis";
 import authRoutes from "./routes/authRoutes";
+import statsRoutes from "./routes/statsRoutes";
 import urlManagementRoutes from "./routes/urlManagementRoutes";
 import urlRoutes from "./routes/urlRoutes";
 import adminRoutes from "./routes/adminRoutes";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.set("trust proxy", 1);
 
 // Browsers block cross-origin requests by default (Same-Origin Policy). This explicitly
 // allows the Vite dev server to call this API with the headers our frontend needs.
@@ -33,6 +36,7 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 app.use(authRoutes);
+app.use(statsRoutes);
 app.use(urlManagementRoutes);
 app.use(adminRoutes);
 

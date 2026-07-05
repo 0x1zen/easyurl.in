@@ -2,10 +2,6 @@ import pool from "../config/db";
 
 interface AccessRow {
   analytics_retention_days: number;
-  features: {
-    analytics_requires_active_trial?: boolean;
-  };
-  trial_end_date: string | null;
 }
 
 interface AnalyticsAccessResult {
@@ -19,7 +15,7 @@ export async function getAnalyticsAccess(
   planId: number
 ): Promise<AnalyticsAccessResult> {
   const result = await pool.query<AccessRow>(
-    `SELECT p.analytics_retention_days, p.features, s.trial_end_date
+    `SELECT p.analytics_retention_days
      FROM subscribers s
      JOIN plans p ON s.plan_id = p.id
      WHERE s.id = $1`,
@@ -28,23 +24,6 @@ export async function getAnalyticsAccess(
 
   const row = result.rows[0];
   if (!row) throw new Error(`Subscriber ${subscriberId} not found`);
-
-  // Check feature flag rather than plan name — plan names can change or be repurposed,
-  // while a JSONB feature flag is an explicit, version-stable contract per plan
-  if (row.features.analytics_requires_active_trial === true) {
-    const trialExpired =
-      row.trial_end_date === null ||
-      new Date(row.trial_end_date) < new Date();
-
-    if (trialExpired) {
-      return {
-        allowed: false,
-        retentionDays: 0,
-        reason:
-          "Your free trial has ended. Analytics requires an active trial or a Pro plan.",
-      };
-    }
-  }
 
   return { allowed: true, retentionDays: row.analytics_retention_days };
 }
@@ -100,11 +79,21 @@ interface HourOfDayRow {
   count: number;
 }
 
+interface DestinationChangeRow {
+  id: number;
+  old_url: string;
+  new_url: string;
+  changed_at: Date;
+}
+
 export async function getClickAnalytics(urlId: number, retentionDays: number) {
   // node-postgres returns Postgres BIGINT (from COUNT(*)) as a JS string to avoid
   // precision loss on values > Number.MAX_SAFE_INTEGER — ::int casts to 32-bit int,
   // which pg returns as a JS number directly, eliminating the need for parseInt everywhere
   const baseParams = [urlId, retentionDays];
+
+  const bucketSize: "day" | "week" | "month" =
+    retentionDays <= 31 ? "day" : retentionDays <= 180 ? "week" : "month";
 
   const [
     totalResult,
@@ -117,6 +106,7 @@ export async function getClickAnalytics(urlId: number, retentionDays: number) {
     languageResult,
     dowResult,
     hourResult,
+    destResult,
   ] = await Promise.all([
     pool.query<TotalClicksRow>(
       `SELECT COUNT(*)::int AS count
@@ -127,13 +117,29 @@ export async function getClickAnalytics(urlId: number, retentionDays: number) {
     ),
 
     pool.query<ClicksOverTimeRow>(
-      `SELECT DATE_TRUNC('day', clicked_at)::date AS date,
-              COUNT(*)::int AS count
-       FROM clicks
-       WHERE url_id = $1
-         AND clicked_at >= NOW() - make_interval(days => $2)
-       GROUP BY DATE_TRUNC('day', clicked_at)
-       ORDER BY DATE_TRUNC('day', clicked_at) ASC`,
+      bucketSize === "day"
+        ? `SELECT DATE_TRUNC('day', clicked_at)::date AS date,
+                  COUNT(*)::int AS count
+           FROM clicks
+           WHERE url_id = $1
+             AND clicked_at >= NOW() - make_interval(days => $2)
+           GROUP BY DATE_TRUNC('day', clicked_at)
+           ORDER BY DATE_TRUNC('day', clicked_at) ASC`
+        : bucketSize === "week"
+        ? `SELECT DATE_TRUNC('week', clicked_at)::date AS date,
+                  COUNT(*)::int AS count
+           FROM clicks
+           WHERE url_id = $1
+             AND clicked_at >= NOW() - make_interval(days => $2)
+           GROUP BY DATE_TRUNC('week', clicked_at)
+           ORDER BY DATE_TRUNC('week', clicked_at) ASC`
+        : `SELECT DATE_TRUNC('month', clicked_at)::date AS date,
+                  COUNT(*)::int AS count
+           FROM clicks
+           WHERE url_id = $1
+             AND clicked_at >= NOW() - make_interval(days => $2)
+           GROUP BY DATE_TRUNC('month', clicked_at)
+           ORDER BY DATE_TRUNC('month', clicked_at) ASC`,
       baseParams
     ),
 
@@ -227,11 +233,21 @@ export async function getClickAnalytics(urlId: number, retentionDays: number) {
        ORDER BY hour ASC`,
       baseParams
     ),
+
+    pool.query<DestinationChangeRow>(
+      `SELECT id, old_url, new_url, changed_at
+       FROM url_destination_changes
+       WHERE url_id = $1
+         AND changed_at >= NOW() - make_interval(days => $2)
+       ORDER BY changed_at ASC`,
+      baseParams
+    ),
   ]);
 
   return {
     totalClicks: totalResult.rows[0]?.count ?? 0,
     retentionDays,
+    bucketSize,
     clicksOverTime: overTimeResult.rows,
     byCountry: countryResult.rows,
     byCity: cityResult.rows,
@@ -241,5 +257,11 @@ export async function getClickAnalytics(urlId: number, retentionDays: number) {
     byLanguage: languageResult.rows,
     byDayOfWeek: dowResult.rows,
     byHourOfDay: hourResult.rows,
+    destinationChanges: destResult.rows.map((r) => ({
+      id: r.id,
+      oldUrl: r.old_url,
+      newUrl: r.new_url,
+      changedAt: r.changed_at instanceof Date ? r.changed_at.toISOString() : String(r.changed_at),
+    })),
   };
 }

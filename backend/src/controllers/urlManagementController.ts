@@ -36,7 +36,7 @@ export async function handleDeleteUrl(
 
     // 404 (not 403) on ownership mismatch — a 403 would confirm the resource exists,
     // which leaks information about other subscribers' data
-    if (!url || url.subscriber_id !== req.subscriber!.id) {
+    if (!url || url.account_id !== req.subscriber!.id) {
       res.status(404).json({ error: "URL not found" });
       return;
     }
@@ -73,7 +73,7 @@ export async function handleUpdateUrl(
     const url = await getUrlById(id);
 
     // 404 (not 403) — same reasoning as handleDeleteUrl
-    if (!url || url.subscriber_id !== req.subscriber!.id) {
+    if (!url || url.account_id !== req.subscriber!.id) {
       res.status(404).json({ error: "URL not found" });
       return;
     }

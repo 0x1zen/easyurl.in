@@ -14,7 +14,7 @@ export async function handleGetUrlAnalytics(
 
     // 404 on ownership mismatch — same pattern as delete/update:
     // returning 403 would confirm the resource exists, leaking another subscriber's data
-    if (!url || url.subscriber_id !== req.subscriber!.id) {
+    if (!url || url.account_id !== req.subscriber!.id) {
       res.status(404).json({ error: "Link not found" });
       return;
     }

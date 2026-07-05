@@ -1,9 +1,18 @@
 import type { Request, Response } from "express";
-import { createShortUrl, getCachedUrl, cacheUrl } from "../services/urlService";
+import {
+  createShortUrl,
+  createAnonymousShortUrl,
+  getCachedUrl,
+  cacheUrl,
+} from "../services/urlService";
 import type { UrlRow } from "../services/urlService";
 import { recordClick } from "../services/clickService";
-import { checkActiveLimitNotExceeded, checkAliasPermission, checkLinkAccessAllowed } from "../services/planService";
+import {
+  checkActiveLimitNotExceeded,
+  checkAliasPermission,
+} from "../services/planService";
 import { checkUrlSafety, extractDomain } from "../services/moderationService";
+import { checkAnonymousRateLimit } from "../services/rateLimitService";
 import pool from "../config/db";
 
 export async function handleCreateShortUrl(
@@ -14,7 +23,7 @@ export async function handleCreateShortUrl(
     originalUrl: unknown;
     customAlias: unknown;
   };
-  const subscriberId = req.subscriber!.id;
+  const accountId = req.subscriber!.id;
 
   if (typeof originalUrl !== "string" || !originalUrl) {
     res.status(400).json({ error: "originalUrl is required" });
@@ -30,7 +39,7 @@ export async function handleCreateShortUrl(
 
   try {
     const withinLimit = await checkActiveLimitNotExceeded(
-      req.subscriber!.id,
+      accountId,
       req.subscriber!.planId
     );
     if (!withinLimit) {
@@ -59,7 +68,7 @@ export async function handleCreateShortUrl(
     const domain = extractDomain(originalUrl);
     const row = await createShortUrl(
       originalUrl,
-      subscriberId,
+      accountId,
       typeof customAlias === "string" ? customAlias : undefined,
       domain
     );
@@ -86,6 +95,56 @@ export async function handleCreateShortUrl(
   }
 }
 
+export async function handleCreateAnonymousShortUrl(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const { originalUrl } = req.body as { originalUrl: unknown };
+
+  if (typeof originalUrl !== "string" || !originalUrl) {
+    res.status(400).json({ error: "originalUrl is required" });
+    return;
+  }
+
+  try {
+    new URL(originalUrl);
+  } catch {
+    res.status(400).json({ error: "originalUrl is not a valid URL" });
+    return;
+  }
+
+  try {
+    const rateLimit = await checkAnonymousRateLimit(req.ip ?? "");
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        error: `Rate limit reached. Please wait ${rateLimit.waitMinutes} minutes.`,
+      });
+      return;
+    }
+
+    const safety = await checkUrlSafety(originalUrl);
+    if (!safety.allowed) {
+      res.status(403).json({ error: safety.reason });
+      return;
+    }
+
+    const row = await createAnonymousShortUrl(originalUrl, req.ip ?? "", req);
+    const baseUrl = process.env["APP_BASE_URL"] ?? "";
+    const shortUrl = `${baseUrl}/${row.short_code}`;
+
+    res.status(201).json({
+      shortUrl,
+      shortCode: row.short_code,
+      originalUrl: row.original_url,
+      expiresAt: row.expiry_date,
+      message: "This link expires in 24 hours. Sign up for permanent links and analytics.",
+    });
+  } catch (err) {
+    console.error("[handleCreateAnonymousShortUrl] Failed:", err);
+    res.status(500).json({ error: "Failed to create short URL" });
+  }
+}
+
 export async function handleRedirect(
   req: Request,
   res: Response
@@ -97,13 +156,6 @@ export async function handleRedirect(
     // so skip the is_active and expiry_date checks on a hit.
     const cached = await getCachedUrl(code);
     if (cached !== null) {
-      const linkAllowed = await checkLinkAccessAllowed(cached.subscriber_id);
-      if (!linkAllowed) {
-        res.status(410).json({
-          error: "This link is inactive. The owner needs to complete signup to continue using it.",
-        });
-        return;
-      }
       void recordClick(cached.id, req);
       res.redirect(302, cached.original_url);
       return;
@@ -128,7 +180,13 @@ export async function handleRedirect(
     }
 
     if (row.expiry_date !== null && new Date(row.expiry_date) < new Date()) {
-      res.status(410).json({ error: "This link has expired" });
+      if (row.is_anonymous) {
+        res.status(410).json({
+          error: "This link has expired. Sign up at easyurl.in for permanent links.",
+        });
+      } else {
+        res.status(410).json({ error: "This link has expired." });
+      }
       return;
     }
 
@@ -141,14 +199,6 @@ export async function handleRedirect(
     // redirect but are not cached — their status may change and caching would serve stale data.
     if (row.moderation_status === "approved") {
       await cacheUrl(code, row);
-    }
-
-    const linkAllowed = await checkLinkAccessAllowed(row.subscriber_id);
-    if (!linkAllowed) {
-      res.status(410).json({
-        error: "This link is inactive. The owner needs to complete signup to continue using it.",
-      });
-      return;
     }
 
     // Fire-and-forget: redirect must happen instantly; click logging is secondary

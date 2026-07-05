@@ -13,21 +13,31 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  ReferenceLine,
 } from "recharts";
 import { useAuth } from "../context/AuthContext";
 import { apiRequest } from "../lib/apiClient";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface DestinationChange {
+  id: number;
+  oldUrl: string;
+  newUrl: string;
+  changedAt: string;
+}
+
 interface AnalyticsData {
   totalClicks: number;
   retentionDays: number;
+  bucketSize: "day" | "week" | "month";
   clicksOverTime: { date: string; count: number }[];
   byCountry: { country: string; count: number }[];
   byDeviceType: { deviceType: string; count: number }[];
   byBrowser: { browser: string; count: number }[];
   byOs: { os: string; count: number }[];
   byDayOfWeek: { dayOfWeek: string; count: number }[];
+  destinationChanges: DestinationChange[];
 }
 
 interface UrlListItem {
@@ -39,13 +49,24 @@ interface UrlListItem {
 interface BarItem {
   label: string;
   count: number;
+  icon?: ReactNode;
+}
+
+interface StatChipDef {
+  bg: string;
+  color: string;
+  icon: ReactNode;
 }
 
 type SegmentOption = 7 | 30 | "all";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DONUT_COLORS = ["#1f8a5b", "#7cc4a3", "#dceee5", "#9aa2ad"];
+// Desktop = blue, Mobile = violet, Tablet = teal, overflow = gray
+const DONUT_COLORS = ["#1f6feb", "#7c5cff", "#0ea5a5", "#9aa2ad"];
+
+// Day-of-week rank colors: index 0 = highest count (darkest), 3 = lowest (lightest)
+const DOW_COLORS = ["#1f6feb", "#4f8cf0", "#9dc0f8", "#c3d9fb"];
 
 const SEGMENTS: { label: string; value: SegmentOption }[] = [
   { label: "7 days", value: 7 },
@@ -53,19 +74,77 @@ const SEGMENTS: { label: string; value: SegmentOption }[] = [
   { label: "All time", value: "all" },
 ];
 
+// ISO 3166-1 alpha-2 → display name
+const COUNTRY_NAMES: Record<string, string> = {
+  US: "United States", IN: "India", GB: "United Kingdom",
+  DE: "Germany", FR: "France", CA: "Canada", AU: "Australia",
+  JP: "Japan", CN: "China", BR: "Brazil", RU: "Russia",
+  KR: "South Korea", SG: "Singapore", NL: "Netherlands",
+  SE: "Sweden", NO: "Norway", DK: "Denmark", FI: "Finland",
+  CH: "Switzerland", AT: "Austria", BE: "Belgium", ES: "Spain",
+  IT: "Italy", PT: "Portugal", PL: "Poland", CZ: "Czechia",
+  HU: "Hungary", RO: "Romania", UA: "Ukraine", GR: "Greece",
+  TR: "Turkey", IL: "Israel", ZA: "South Africa", MX: "Mexico",
+  AR: "Argentina", CL: "Chile", CO: "Colombia", VN: "Vietnam",
+  TH: "Thailand", ID: "Indonesia", MY: "Malaysia", PH: "Philippines",
+  PK: "Pakistan", BD: "Bangladesh", EG: "Egypt", NG: "Nigeria",
+  KE: "Kenya", NZ: "New Zealand", IE: "Ireland", SA: "Saudi Arabia",
+  AE: "United Arab Emirates", HK: "Hong Kong", TW: "Taiwan",
+  ZZ: "Unknown",
+};
+
+// Browser name → Simple Icons slug (https://cdn.simpleicons.org/{slug})
+const BROWSER_SLUGS: Record<string, string> = {
+  Chrome: "googlechrome",
+  Firefox: "firefox",
+  Safari: "safari",
+  Edge: "microsoftedge",
+  Opera: "opera",
+  "Samsung Internet": "samsung",
+  "Samsung Browser": "samsung",
+  Brave: "brave",
+  Vivaldi: "vivaldi",
+  "Internet Explorer": "internetexplorer",
+};
+
+// OS name → Simple Icons slug
+const OS_SLUGS: Record<string, string> = {
+  Windows: "windows",
+  macOS: "apple",
+  iOS: "apple",
+  Android: "android",
+  Linux: "linux",
+  Ubuntu: "ubuntu",
+  Fedora: "fedora",
+  Debian: "debian",
+  "Chrome OS": "googlechrome",
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatDayLabel(v: string | number): string {
+function extractHostname(url: string): string {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
+function formatAxisLabel(
+  v: string | number,
+  bucketSize: "day" | "week" | "month"
+): string {
   const s = String(v);
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
-  if (match) {
-    const [, y, m, d] = match;
-    return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en", {
-      weekday: "short",
-    });
+  const date = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(s);
+  if (isNaN(date.getTime())) return s;
+
+  if (bucketSize === "week") {
+    const weekOfMonth = Math.ceil(date.getDate() / 7);
+    return date.toLocaleDateString("en", { month: "short" }) + " W" + weekOfMonth;
   }
-  const date = new Date(s);
-  return isNaN(date.getTime()) ? s : date.toLocaleDateString("en", { weekday: "short" });
+  if (bucketSize === "month") {
+    return date.toLocaleDateString("en", { month: "short", year: "2-digit" });
+  }
+  return date.toLocaleDateString("en", { month: "short", day: "numeric" });
 }
 
 function getTrend(
@@ -80,6 +159,146 @@ function getTrend(
   return { pct: Math.abs(pct), isPositive: last > first };
 }
 
+function getCountryDisplay(country: string): string {
+  if (/^[A-Z]{2}$/.test(country)) return COUNTRY_NAMES[country] ?? country;
+  return country;
+}
+
+function getDowColor(count: number, sortedUniqueCounts: number[]): string {
+  if (count === 0) return DOW_COLORS[DOW_COLORS.length - 1];
+  const rank = sortedUniqueCounts.indexOf(count);
+  return DOW_COLORS[Math.min(rank, DOW_COLORS.length - 1)];
+}
+
+// ── Inline SVG icons ──────────────────────────────────────────────────────────
+
+function IconCursor() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 3l14 9-7 1-3 7-4-17z" />
+    </svg>
+  );
+}
+
+function IconGlobe() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+
+function IconMonitor({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
+  );
+}
+
+function IconClock() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 6v6l4 2" />
+    </svg>
+  );
+}
+
+function IconPhone() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="7" y="2" width="10" height="20" rx="2" />
+      <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function IconTablet() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="2" width="16" height="20" rx="2" />
+      <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// ── Icon helper components ────────────────────────────────────────────────────
+
+function DeviceTypeIcon({ type }: { type: string }) {
+  const t = type.toLowerCase();
+  if (t === "mobile") return <IconPhone />;
+  if (t === "tablet") return <IconTablet />;
+  return <IconMonitor size={14} />;
+}
+
+function CountryFlag({ country }: { country: string }) {
+  let iso: string | undefined;
+  if (/^[A-Z]{2}$/.test(country)) {
+    iso = country.toLowerCase();
+  } else {
+    const found = Object.entries(COUNTRY_NAMES).find(
+      ([, name]) => name.toLowerCase() === country.toLowerCase()
+    );
+    iso = found ? found[0].toLowerCase() : undefined;
+  }
+  if (iso === undefined || iso === "zz") return null;
+  return (
+    <img
+      src={`https://flagcdn.com/20x15/${iso}.png`}
+      srcSet={`https://flagcdn.com/40x30/${iso}.png 2x`}
+      width={20}
+      height={15}
+      alt=""
+      style={{ borderRadius: 2, border: "1px solid #e7ebf1", display: "block", flexShrink: 0 }}
+    />
+  );
+}
+
+// Inline SVGs for brands where the CDN icon is unreliable or missing
+function IconWindows() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" aria-hidden="true" fill="#0078D4">
+      <path d="M2.5 3.5h8.5v8.5H2.5zM13 2.5h8.5v8.5H13zM2.5 13h8.5v8.5H2.5zM13 13h8.5v8.5H13z" />
+    </svg>
+  );
+}
+
+function IconEdge() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#0078D4" d="M21.86 8.54A10 10 0 1 0 12 22a9.62 9.62 0 0 0 5-1.28v-.09a6.51 6.51 0 0 1-4.36-6.07 6.51 6.51 0 0 1 .26-1.81 5.57 5.57 0 0 1 8.66-4.71 9.93 9.93 0 0 0 .3-1.5z" />
+      <path fill="#50E6FF" d="M11.73 7.7a5.16 5.16 0 0 1 2.4.56A9.94 9.94 0 0 0 7.82 2.5C4.19 2.5 1 4.76 1 9.13a7.74 7.74 0 0 0 2.35 5.51 6.4 6.4 0 0 1-.19-1.5A6.5 6.5 0 0 1 9.68 7.7z" />
+    </svg>
+  );
+}
+
+function CdnBrandImg({ slug }: { slug: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      src={`https://cdn.simpleicons.org/${slug}`}
+      width={16}
+      height={16}
+      alt=""
+      onError={() => setFailed(true)}
+      style={{ display: "block", flexShrink: 0 }}
+    />
+  );
+}
+
+function BrandIcon({ name, slugMap }: { name: string; slugMap: Record<string, string> }) {
+  if (name === "Windows") return <IconWindows />;
+  if (name === "Edge") return <IconEdge />;
+  const slug = slugMap[name];
+  if (slug === undefined) return null;
+  return <CdnBrandImg slug={slug} />;
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function StatCard({
@@ -87,15 +306,27 @@ function StatCard({
   value,
   subline,
   sublineType = "muted",
+  chip,
 }: {
   label: string;
   value: string | number;
   subline?: string;
   sublineType?: "positive" | "negative" | "muted";
+  chip?: StatChipDef;
 }) {
   return (
     <div className="card analytics-stat-card">
-      <span className="analytics-stat-label">{label}</span>
+      <div className="analytics-stat-card-top">
+        <span className="analytics-stat-label">{label}</span>
+        {chip !== undefined && (
+          <span
+            className="analytics-stat-chip"
+            style={{ background: chip.bg, color: chip.color }}
+          >
+            {chip.icon}
+          </span>
+        )}
+      </div>
       <strong className="analytics-stat-value">{value}</strong>
       {subline !== undefined && (
         <span className={`analytics-stat-subline analytics-stat-subline--${sublineType}`}>
@@ -136,7 +367,12 @@ function BreakdownColumn({ header, items }: { header: string; items: BarItem[] }
       {items.map((item) => (
         <div className="breakdown-item" key={item.label}>
           <div className="breakdown-item-top">
-            <span className="breakdown-item-label">{item.label}</span>
+            <span className="breakdown-item-label-wrap">
+              {item.icon !== undefined && (
+                <span className="breakdown-item-icon">{item.icon}</span>
+              )}
+              <span className="breakdown-item-label">{item.label}</span>
+            </span>
             <strong className="breakdown-item-count">
               {item.count.toLocaleString()}
             </strong>
@@ -151,6 +387,33 @@ function BreakdownColumn({ header, items }: { header: string; items: BarItem[] }
       ))}
     </div>
   );
+}
+
+function formatLanguage(code: string): string {
+  try {
+    const display = new Intl.DisplayNames(["en"], { type: "language" });
+    return display.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+function findClosestDate(
+  changedAt: string,
+  clicksOverTime: { date: string; count: number }[]
+): string | null {
+  if (clicksOverTime.length === 0) return null;
+  const target = new Date(changedAt).getTime();
+  let closest: string | null = null;
+  let minDiff = Infinity;
+  for (const point of clicksOverTime) {
+    const diff = Math.abs(new Date(point.date).getTime() - target);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = point.date;
+    }
+  }
+  return closest;
 }
 
 // ── Analytics page ────────────────────────────────────────────────────────────
@@ -220,6 +483,8 @@ export default function Analytics() {
       error.toLowerCase().includes("trial") ||
       error.toLowerCase().includes("expired") ||
       error.toLowerCase().includes("upgrade"));
+      
+    
 
   const trend = data !== null ? getTrend(data.clicksOverTime) : null;
   const topDevicePct =
@@ -230,16 +495,20 @@ export default function Analytics() {
     data !== null && data.byBrowser.length > 0 && data.totalClicks > 0
       ? Math.round((data.byBrowser[0].count / data.totalClicks) * 100)
       : null;
-  const maxDayCount =
-    data !== null ? Math.max(...data.byDayOfWeek.map((d) => d.count), 0) : 0;
+
+  // Sorted unique click counts descending — used for rank-based DOW bar coloring
+  const sortedDowCounts =
+    data !== null
+      ? [...new Set(data.byDayOfWeek.map((d) => d.count))].sort((a, b) => b - a)
+      : [];
 
   return (
     <div className="dash-page">
-      {/* Header — identical to Dashboard */}
+      {/* Header */}
       <header className="dash-header">
         <div className="dash-header-inner">
           <Link to="/" className="navbar-brand">
-            <span className="navbar-logo-mark" aria-hidden="true">e</span>
+            <img src="https://res.cloudinary.com/dwokx2ugh/image/upload/v1783216133/favicon-48_zot5eo.png" width={28} height={28} alt="" className="navbar-logo-mark" />
             <span className="navbar-wordmark">
               easyurl<span className="navbar-tld">.in</span>
             </span>
@@ -263,7 +532,7 @@ export default function Analytics() {
           ← Back to dashboard
         </Link>
 
-        {/* Title row: heading left, segment control right */}
+        {/* Title row */}
         <div className="analytics-title-row">
           <div>
             <h1 className="dash-heading">Link Analytics</h1>
@@ -306,12 +575,14 @@ export default function Analytics() {
           <div className="analytics-error-block">
             <p className="analytics-error-msg">{error}</p>
             {isAccessDenied && (
-              <Link to="/#pricing" className="btn">Upgrade to Pro</Link>
+              <p className="text-muted">
+                <Link to="/login">Sign in</Link> to access analytics for your links.
+              </p>
             )}
           </div>
         )}
 
-        {/* Charts — dimmable while a re-fetch is in flight */}
+        {/* Charts */}
         {!initialLoading && error === null && data !== null && (
           <div
             className={
@@ -326,7 +597,7 @@ export default function Analytics() {
               </p>
             )}
 
-            {/* Stat cards */}
+            {/* Stat cards — each with a colored icon chip */}
             <div className="analytics-stat-row">
               <StatCard
                 label="Total Clicks"
@@ -343,12 +614,14 @@ export default function Analytics() {
                       : "negative"
                     : undefined
                 }
+                chip={{ bg: "#e8f0fd", color: "#1f6feb", icon: <IconCursor /> }}
               />
               <StatCard
                 label="Countries"
                 value={data.byCountry.length}
                 subline="reached"
                 sublineType="muted"
+                chip={{ bg: "#e4f6f4", color: "#0ea5a5", icon: <IconGlobe /> }}
               />
               <StatCard
                 label="Top Device"
@@ -357,6 +630,7 @@ export default function Analytics() {
                   topDevicePct !== null ? `${topDevicePct}% of clicks` : undefined
                 }
                 sublineType="muted"
+                chip={{ bg: "#efeafe", color: "#7c5cff", icon: <IconMonitor /> }}
               />
               <StatCard
                 label="Top Browser"
@@ -365,6 +639,7 @@ export default function Analytics() {
                   topBrowserPct !== null ? `${topBrowserPct}% of clicks` : undefined
                 }
                 sublineType="muted"
+                chip={{ bg: "#fef2e2", color: "#f59e0b", icon: <IconClock /> }}
               />
             </div>
 
@@ -378,21 +653,22 @@ export default function Analytics() {
               <ResponsiveContainer width="100%" height={260}>
                 <AreaChart
                   data={data.clicksOverTime}
-                  margin={{ top: 4, right: 16, left: -8, bottom: 0 }}
+                  margin={{ top: 24, right: 16, left: -8, bottom: 0 }}
                 >
                   <defs>
                     <linearGradient id="clicksAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#1f8a5b" stopOpacity={0.12} />
-                      <stop offset="95%" stopColor="#1f8a5b" stopOpacity={0} />
+                      <stop offset="5%" stopColor="#1f6feb" stopOpacity={0.12} />
+                      <stop offset="95%" stopColor="#1f6feb" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="#f0f2f5" vertical={false} />
                   <XAxis
                     dataKey="date"
-                    tickFormatter={(v: string | number) => formatDayLabel(v)}
+                    tickFormatter={(v: string | number) => formatAxisLabel(v, data.bucketSize)}
                     tick={{ fontSize: 12, fill: "#9aa2ad" }}
                     axisLine={false}
                     tickLine={false}
+                    interval={data.bucketSize === "day" ? "preserveStartEnd" : 0}
                   />
                   <YAxis
                     tick={{ fontSize: 12, fill: "#9aa2ad" }}
@@ -405,24 +681,66 @@ export default function Analytics() {
                       typeof value === "number" ? value.toLocaleString() : String(value),
                       "Clicks",
                     ]}
-                    labelFormatter={(label) => formatDayLabel(label as string | number)}
+                    labelFormatter={(label) => formatAxisLabel(label as string | number, data.bucketSize)}
                   />
                   <Area
                     type="monotone"
                     dataKey="count"
-                    stroke="#1f8a5b"
+                    stroke="#1f6feb"
                     strokeWidth={2.5}
                     fill="url(#clicksAreaGrad)"
                     dot={false}
-                    activeDot={{ r: 5, fill: "#fff", stroke: "#1f8a5b", strokeWidth: 2 }}
+                    activeDot={{ r: 5, fill: "#fff", stroke: "#1f6feb", strokeWidth: 2 }}
                   />
+                  {data.destinationChanges.map((change) => {
+                    const xValue = findClosestDate(change.changedAt, data.clicksOverTime);
+                    if (xValue === null) return null;
+                    return (
+                      <ReferenceLine
+                        key={change.id}
+                        x={xValue}
+                        stroke="#f59e0b"
+                        strokeDasharray="4 3"
+                        strokeWidth={2}
+                        label={{
+                          value: "↓ destination changed",
+                          position: "insideTopLeft",
+                          fontSize: 10,
+                          fill: "#f59e0b",
+                          offset: 8,
+                        }}
+                      />
+                    );
+                  })}
                 </AreaChart>
               </ResponsiveContainer>
             </ChartCard>
 
-            {/* 2-column row: device donut + day of week bar */}
+            {data.destinationChanges.length > 0 && (
+              <div className="dest-change-note">
+                <p className="dest-change-note-intro">
+                  ⚡ Dashed lines indicate when this link's destination was changed.
+                </p>
+                <ul className="dest-change-list">
+                  {data.destinationChanges.map((change) => (
+                    <li key={change.id}>
+                      {new Date(change.changedAt).toLocaleDateString("en", {
+                        month: "short",
+                        day: "numeric",
+                      })}
+                      {" — changed from "}
+                      <span className="dest-change-domain">{extractHostname(change.oldUrl)}</span>
+                      {" to "}
+                      <span className="dest-change-domain">{extractHostname(change.newUrl)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* 2-column: device donut + day of week bar */}
             <div className="analytics-charts-grid">
-              {/* Device donut with custom right-side legend */}
+              {/* Device donut — Desktop blue, Mobile violet, Tablet teal */}
               <ChartCard title="Clicks by device">
                 <div className="device-chart-wrap">
                   <div className="device-donut-container">
@@ -464,9 +782,11 @@ export default function Analytics() {
                       return (
                         <div className="device-legend-row" key={entry.deviceType}>
                           <span
-                            className="device-legend-dot"
-                            style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
-                          />
+                            className="device-legend-icon"
+                            style={{ color: DONUT_COLORS[i % DONUT_COLORS.length] }}
+                          >
+                            <DeviceTypeIcon type={entry.deviceType} />
+                          </span>
                           <span className="device-legend-name">{entry.deviceType}</span>
                           <strong className="device-legend-pct">{pct}%</strong>
                         </div>
@@ -476,7 +796,7 @@ export default function Analytics() {
                 </div>
               </ChartCard>
 
-              {/* Day of week — max bar highlighted in primary, others in light emerald */}
+              {/* Day of week — max bar darkest blue, rest stepped lighter */}
               <ChartCard title="Clicks by day of week">
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart
@@ -502,11 +822,7 @@ export default function Analytics() {
                       {data.byDayOfWeek.map((entry, i) => (
                         <Cell
                           key={`cell-${i}`}
-                          fill={
-                            entry.count === maxDayCount && maxDayCount > 0
-                              ? "#1f8a5b"
-                              : "#dceee5"
-                          }
+                          fill={getDowColor(entry.count, sortedDowCounts)}
                         />
                       ))}
                     </Bar>
@@ -515,26 +831,39 @@ export default function Analytics() {
               </ChartCard>
             </div>
 
-            {/* Top breakdowns — single card, 3-column grid inside */}
+            {/* Top breakdowns — flags, browser icons, OS icons */}
             <ChartCard title="Top breakdowns">
               <div className="breakdown-grid">
                 <BreakdownColumn
                   header="Country"
-                  items={data.byCountry
-                    .slice(0, 5)
-                    .map((d) => ({ label: d.country, count: d.count }))}
+                  items={data.byCountry.slice(0, 5).map((d) => ({
+                    label: getCountryDisplay(d.country),
+                    count: d.count,
+                    icon: <CountryFlag country={d.country} />,
+                  }))}
                 />
                 <BreakdownColumn
                   header="Browser"
-                  items={data.byBrowser
-                    .slice(0, 5)
-                    .map((d) => ({ label: d.browser, count: d.count }))}
+                  items={data.byBrowser.slice(0, 5).map((d) => ({
+                    label: d.browser,
+                    count: d.count,
+                    icon: <BrandIcon name={d.browser} slugMap={BROWSER_SLUGS} />,
+                  }))}
                 />
                 <BreakdownColumn
                   header="Operating System"
-                  items={data.byOs
-                    .slice(0, 5)
-                    .map((d) => ({ label: d.os, count: d.count }))}
+                  items={data.byOs.slice(0, 5).map((d) => ({
+                    label: d.os,
+                    count: d.count,
+                    icon: <BrandIcon name={d.os} slugMap={OS_SLUGS} />,
+                  }))}
+                />
+                <BreakdownColumn
+                  header="Language"
+                  items={data.byLanguage.slice(0, 5).map((d) => ({
+                    label: formatLanguage(d.language),
+                    count: d.count,
+                  }))}
                 />
               </div>
             </ChartCard>

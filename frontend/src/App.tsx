@@ -3,53 +3,45 @@ import { Link, Outlet, Route, Routes, useNavigate, useLocation } from "react-rou
 import { motion, useReducedMotion, type MotionProps } from "framer-motion";
 import Navbar from "./components/Navbar";
 import ProtectedRoute from "./components/ProtectedRoute";
+import RollingNumber from "./components/RollingNumber";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Analytics from "./pages/Analytics";
 import { useAuth } from "./context/AuthContext";
 import { apiRequest } from "./lib/apiClient";
 
+interface StatsResponse {
+  totalUrls: number;
+  totalClicks: number;
+}
+
 // ── Landing page data ────────────────────────────────────────────────────────
 
 const FEATURES = [
   {
+    title: "Instant Link Shortening",
+    desc: "Create short links in seconds, no account required for quick links.",
+  },
+  {
     title: "Custom Aliases",
-    desc: "Brand your links with memorable slugs — ditch random characters and own every URL you share.",
+    desc: "Choose your own short code (e.g. easyurl.in/my-brand) for branded links.",
   },
   {
-    title: "Deep Analytics",
-    desc: "Clicks broken down by country, city, device, browser, OS, language, and hour of day.",
+    title: "Deep Click Analytics",
+    desc: "Track clicks by country, device, browser, OS, and time of day.",
   },
   {
-    title: "Smart Link Management",
-    desc: "Set expiry dates, edit destinations, rename aliases, and organise links from one dashboard.",
+    title: "Link Management",
+    desc: "Edit destinations, delete links, and organise everything from your dashboard.",
   },
   {
     title: "Malicious URL Protection",
-    desc: "Every URL is screened against Google Safe Browsing before creation — unsafe links never go live.",
+    desc: "Every link is checked against Google Safe Browsing before creation — unsafe links never go live.",
   },
   {
-    title: "Lightning-Fast Redirects",
-    desc: "Redis-backed caching resolves redirects in milliseconds, consistently, at any traffic level.",
+    title: "Anonymous Quick Links",
+    desc: "No account needed. Paste a URL, get a link instantly. Expires in 24 hours.",
   },
-  {
-    title: "Free Tier to Get Started",
-    desc: "Five lifetime links and 7-day analytics at zero cost — no credit card, no hidden limits.",
-  },
-] as const;
-
-const FREE_PLAN = [
-  "5 active links (lifetime)",
-  "7-day analytics retention",
-  "Basic click breakdown",
-  "1-month free trial included",
-] as const;
-
-const PRO_PLAN = [
-  "250 links per month",
-  "2-year analytics retention",
-  "Unlimited custom aliases",
-  "Geography, device & AI insights",
 ] as const;
 
 // Returns scroll-reveal animation props. When `noMotion` is true (prefers-reduced-motion
@@ -68,12 +60,39 @@ function scrollAnim(
   };
 }
 
+interface ShortenResult {
+  shortUrl: string;
+  expiresAt: string;
+  message: string;
+}
+
+interface AnonymousShortenResponse {
+  shortUrl: string;
+  shortCode: string;
+  originalUrl: string;
+  expiresAt: string;
+  message: string;
+}
+
 function Landing() {
   const { hash } = useLocation();
+  const [shortenUrl, setShortenUrl] = useState("");
+  const [shortenResult, setShortenResult] = useState<ShortenResult | null>(null);
+  const [shortenLoading, setShortenLoading] = useState(false);
+  const [shortenError, setShortenError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [stats, setStats] = useState({ linksCreated: 0, clicksTracked: 0 });
 
-  // Scroll to the hash section after the component mounts or when the hash changes.
-  // Needed because <Link to="/#pricing"> is a SPA navigation — the browser won't
-  // auto-scroll the way a full-page load would.
+  useEffect(() => {
+    apiRequest<StatsResponse>("/stats")
+      .then((data) => {
+        setStats({ linksCreated: data.totalUrls, clicksTracked: data.totalClicks });
+      })
+      .catch(() => {
+        // Stats are decorative — silently keep zeros on failure
+      });
+  }, []);
+
   useEffect(() => {
     if (!hash) return;
     const el = document.getElementById(hash.slice(1));
@@ -86,9 +105,47 @@ function Landing() {
     ? undefined
     : { y: -4, transition: { type: "tween", duration: 0.15 } };
 
+  function handleShorten(): void {
+    setShortenError(null);
+    try {
+      new URL(shortenUrl);
+    } catch {
+      setShortenError("Please enter a valid URL");
+      return;
+    }
+    setShortenLoading(true);
+    apiRequest<AnonymousShortenResponse>("/shorten/anonymous", {
+      method: "POST",
+      body: { originalUrl: shortenUrl },
+    })
+      .then((data) => {
+        setShortenResult({
+          shortUrl: data.shortUrl,
+          expiresAt: data.expiresAt,
+          message: data.message,
+        });
+        setShortenError(null);
+      })
+      .catch((err: unknown) => {
+        setShortenError(err instanceof Error ? err.message : "Something went wrong");
+      })
+      .finally(() => setShortenLoading(false));
+  }
+
+  function handleCopy(): void {
+    if (!shortenResult) return;
+    navigator.clipboard
+      .writeText(shortenResult.shortUrl)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {});
+  }
+
   return (
     <>
-      {/* ── Hero (unchanged) ── */}
+      {/* ── Hero ── */}
       <div className="landing">
         <div className="landing-content">
           <h1 className="landing-headline">
@@ -99,22 +156,62 @@ function Landing() {
           </p>
 
           <div className="shorten-bar">
-            <input type="url" placeholder="Paste a long URL…" />
-            <button type="button">Shorten</button>
+            <input
+              type="url"
+              placeholder="Paste a long URL…"
+              value={shortenUrl}
+              onChange={(e) => setShortenUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleShorten(); }}
+            />
+            <button type="button" onClick={handleShorten} disabled={shortenLoading}>
+              {shortenLoading ? "Shortening…" : "Shorten"}
+            </button>
           </div>
+
+          {shortenError !== null && (
+            <p className="shorten-bar-error">{shortenError}</p>
+          )}
+
+          {shortenResult !== null && (
+            <div className="card shorten-result-card">
+              <div className="shorten-result-url-row">
+                <a
+                  href={shortenResult.shortUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shorten-result-link"
+                >
+                  {shortenResult.shortUrl}
+                </a>
+                <button
+                  type="button"
+                  className="shorten-result-copy-btn"
+                  onClick={handleCopy}
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <p className="shorten-result-expiry">
+                ⚠ This link expires in 24 hours
+              </p>
+              <Link to="/signup" className="shorten-result-cta">
+                Sign up for permanent links and analytics →
+              </Link>
+            </div>
+          )}
 
           <div className="trust-strip">
             <div className="stats-card">
               <div className="trust-item">
-                <span className="trust-value">2.4M+</span>
+                <RollingNumber target={stats.linksCreated} suffix="+" />
                 <span className="trust-label">Links Created</span>
               </div>
               <div className="trust-item">
-                <span className="trust-value">18M+</span>
+                <RollingNumber target={stats.clicksTracked} suffix="+" />
                 <span className="trust-label">Clicks Tracked</span>
               </div>
               <div className="trust-item">
-                <span className="trust-value">99.9%</span>
+                <RollingNumber target={99.9} decimals={1} suffix="%" />
                 <span className="trust-label">Uptime</span>
               </div>
             </div>
@@ -143,53 +240,14 @@ function Landing() {
         </div>
       </section>
 
-      {/* ── Pricing teaser ── */}
-      <section id="pricing" className="lp-section">
-        <div className="lp-section-inner">
-          <h2 className="lp-section-heading">Simple, transparent pricing</h2>
-          <p className="lp-section-subtext">Start free, upgrade when you're ready.</p>
-          <div className="pricing-grid">
-            <motion.div
-              className="card pricing-card"
-              {...scrollAnim(0, noMotion)}
-              whileHover={hoverLift}
-            >
-              <p className="pricing-name">Free</p>
-              <p className="pricing-price">₹0</p>
-              <ul className="pricing-features">
-                {FREE_PLAN.map((f) => <li key={f}>{f}</li>)}
-              </ul>
-              <Link to="/signup" className="btn">Get started</Link>
-            </motion.div>
-
-            <motion.div
-              className="card pricing-card pricing-card--pro"
-              {...scrollAnim(0.1, noMotion)}
-              whileHover={hoverLift}
-            >
-              <p className="pricing-name">
-                Pro <span className="badge">Most popular</span>
-              </p>
-              <p className="pricing-price">
-                ₹699<span className="pricing-period">/month</span>
-              </p>
-              <ul className="pricing-features">
-                {PRO_PLAN.map((f) => <li key={f}>{f}</li>)}
-              </ul>
-              <Link to="/signup" className="btn">Start free trial</Link>
-            </motion.div>
-          </div>
-        </div>
-      </section>
-
       {/* ── Closing CTA ── */}
       <section className="lp-cta">
         <div className="lp-section-inner">
-          <h2 className="lp-section-heading">Ready to take control of your links?</h2>
+          <h2 className="lp-section-heading">Start shortening for free</h2>
           <p className="lp-cta-subtext">
-            Join thousands of teams using easyurl.in to shorten, brand, and track every click.
+            No credit card. No trial. Just sign up and start.
           </p>
-          <Link to="/signup" className="btn lp-cta-btn">Create your free account</Link>
+          <Link to="/signup" className="btn lp-cta-btn">Create free account</Link>
         </div>
       </section>
     </>

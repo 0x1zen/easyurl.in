@@ -1,74 +1,66 @@
--- ============================
+
+-- ==========================================
 -- 1. PLANS
--- ============================
+-- ==========================================
 CREATE TABLE IF NOT EXISTS plans (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(50) NOT NULL UNIQUE,
     price NUMERIC(10,2) NOT NULL,
-    monthly_url_limit INT NOT NULL,
+    active_url_limit INT NOT NULL,
     analytics_retention_days INT NOT NULL,
     features JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ============================
+INSERT INTO plans (name, price, active_url_limit, analytics_retention_days, features)
+VALUES ('Free', 0.00, 5, 36500, '{"custom_alias": true, "manage_links": true}'::jsonb);
+
+-- ==========================================
 -- 2. SUBSCRIBERS
--- ============================
+-- ==========================================
 CREATE TABLE IF NOT EXISTS subscribers (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email VARCHAR(255) UNIQUE,
-    password_hash VARCHAR(255),
-    api_key VARCHAR(64) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
     plan_id BIGINT NOT NULL REFERENCES plans(id),
-    trial_start_date DATE,
-    trial_end_date DATE,
     account_status VARCHAR(20) NOT NULL DEFAULT 'active'
-        CHECK (account_status IN ('active', 'suspended', 'cancelled')),
+        CHECK (account_status IN ('active', 'suspended')),
     signup_ip VARCHAR(45),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ============================
+-- ==========================================
 -- 3. URLS
--- ============================
+-- ==========================================
 CREATE TABLE IF NOT EXISTS urls (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     original_url TEXT NOT NULL,
     short_code VARCHAR(30) NOT NULL UNIQUE,
-    subscriber_id BIGINT NOT NULL REFERENCES subscribers(id),
+    domain VARCHAR(255),
+    -- Ownership: null for anonymous, set for account-owned
+    account_id BIGINT REFERENCES subscribers(id),
+    is_anonymous BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Anonymous creator info (captured even for anonymous links)
+    created_by_ip VARCHAR(45),
+    created_by_browser VARCHAR(50),
+    created_by_device VARCHAR(50),
+    created_by_country VARCHAR(100),
+    -- Custom alias flag (Pro only)
     is_custom_alias BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Moderation
     moderation_status VARCHAR(20) NOT NULL DEFAULT 'approved'
         CHECK (moderation_status IN ('pending', 'approved', 'blocked')),
-    expiry_date DATE,
+    -- Expiry: set for anonymous (24h), null for free accounts, managed for Pro
+    expiry_date TIMESTAMPTZ,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ============================
--- 4. TAGS
--- ============================
-create TABLE IF NOT exists tags (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subscriber_id BIGINT NOT NULL REFERENCES subscribers(id),
-    name VARCHAR(50) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (subscriber_id, name)
-);
-
--- ============================
--- 5. URL_TAGS (junction table)
--- ============================
-create TABLE IF NOT EXISTS url_tags (
-    url_id BIGINT NOT NULL REFERENCES urls(id),
-    tag_id BIGINT NOT NULL REFERENCES tags(id),
-    PRIMARY KEY (url_id, tag_id)
-);
-
--- ============================
--- 6. CLICKS
--- ============================
-create TABLE IF NOT EXISTS clicks (
+-- ==========================================
+-- 4. CLICKS
+-- ==========================================
+CREATE TABLE IF NOT EXISTS clicks (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     url_id BIGINT NOT NULL REFERENCES urls(id),
     clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -77,27 +69,25 @@ create TABLE IF NOT EXISTS clicks (
     device_type VARCHAR(50),
     browser VARCHAR(50),
     os VARCHAR(50),
-    referrer TEXT
+    referrer TEXT,
+    language VARCHAR(35)
 );
 
--- ============================
--- 7. SUPPORT_TICKETS
--- ============================
-create TABLE IF NOT EXISTS support_tickets (
+-- ==========================================
+-- 5. ANONYMOUS URL CREATION LOG
+-- ==========================================
+CREATE TABLE IF NOT EXISTS anonymous_url_creation_log (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subscriber_id BIGINT NOT NULL REFERENCES subscribers(id),
-    subject VARCHAR(255) NOT NULL,
-    message TEXT NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    resolved_at TIMESTAMPTZ
+    ip_address VARCHAR(45) NOT NULL,
+    short_code VARCHAR(30) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_anon_log_ip_created ON anonymous_url_creation_log(ip_address, created_at);
 
--- ============================
--- 8. MALICIOUS_URLS (audit log)
--- ============================
-create TABLE IF NOT EXISTS malicious_urls (
+-- ==========================================
+-- 6. MALICIOUS_URLS (audit log)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS malicious_urls (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     domain VARCHAR(255) NOT NULL,
     original_url TEXT NOT NULL,
@@ -107,10 +97,10 @@ create TABLE IF NOT EXISTS malicious_urls (
     flagged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ============================
--- 9. FLAGGED_DOMAINS (admin verdicts)
--- ============================
-create TABLE IF NOT EXISTS flagged_domains (
+-- ==========================================
+-- 7. FLAGGED_DOMAINS (admin verdicts)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS flagged_domains (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     domain VARCHAR(255) NOT NULL UNIQUE,
     status VARCHAR(20) NOT NULL DEFAULT 'pending_review'
@@ -121,17 +111,26 @@ create TABLE IF NOT EXISTS flagged_domains (
     admin_notes TEXT
 );
 
--- This column genuinely exists from your original schema script — safe to rename
-ALTER TABLE plans RENAME COLUMN monthly_url_limit TO active_url_limit;
+-- ==========================================
+-- 8. SUPPORT TICKETS
+-- ==========================================
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subscriber_id BIGINT NOT NULL REFERENCES subscribers(id),
+    subject VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
 
--- Free plan currently has features = {} (the column default) — fill it in properly
-UPDATE plans SET features = '{"custom_alias": false, "manage_links": false, "analytics_requires_active_trial": true}'::jsonb
-    WHERE name = 'Free';
+CREATE table if not EXISTS url_destination_changes (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    url_id BIGINT NOT NULL REFERENCES urls(id),
+    old_url TEXT NOT NULL,
+    new_url TEXT NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-    UPDATE plans SET features = features || '{"requires_signup_after_trial": true}'::jsonb
-    WHERE name = 'Free';
-UPDATE plans SET features = features || '{"requires_signup_after_trial": false}'::jsonb
-    WHERE name = 'Pro';
-
-    ALTER TABLE urls ADD COLUMN domain VARCHAR(255);
-CREATE INDEX idx_urls_domain ON urls(domain);
+CREATE INDEX idx_dest_changes_url_id ON url_destination_changes(url_id);
