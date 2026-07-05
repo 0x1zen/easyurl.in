@@ -7,7 +7,8 @@
     "dev": "ts-node-dev --files --respawn src/index.ts",
     "migrate": "ts-node --files src/migrate.ts",
     "cleanup": "ts-node --files scripts/cleanup-test-data.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build":"tsc"
   },
   "keywords": [],
   "author": "",
