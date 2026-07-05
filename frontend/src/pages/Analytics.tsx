@@ -37,6 +37,7 @@ interface AnalyticsData {
   byBrowser: { browser: string; count: number }[];
   byOs: { os: string; count: number }[];
   byDayOfWeek: { dayOfWeek: string; count: number }[];
+  byLanguage: { language: string; count: number }[];
   destinationChanges: DestinationChange[];
 }
 
