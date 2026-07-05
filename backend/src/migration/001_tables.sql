@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS plans (
 );
 
 INSERT INTO plans (name, price, active_url_limit, analytics_retention_days, features)
-VALUES ('Free', 0.00, 5, 36500, '{"custom_alias": true, "manage_links": true}'::jsonb);
+VALUES ('Free', 0.00, 5, 36500, '{"custom_alias": true, "manage_links": true}'::jsonb)
+ON CONFLICT (name) DO NOTHING;
 
 -- ==========================================
 -- 2. SUBSCRIBERS
@@ -82,7 +83,7 @@ CREATE TABLE IF NOT EXISTS anonymous_url_creation_log (
     short_code VARCHAR(30) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_anon_log_ip_created ON anonymous_url_creation_log(ip_address, created_at);
+CREATE INDEX IF NOT EXISTS idx_anon_log_ip_created ON anonymous_url_creation_log(ip_address, created_at);
 
 -- ==========================================
 -- 6. MALICIOUS_URLS (audit log)
@@ -112,20 +113,9 @@ CREATE TABLE IF NOT EXISTS flagged_domains (
 );
 
 -- ==========================================
--- 8. SUPPORT TICKETS
+-- 8. URL DESTINATION CHANGES
 -- ==========================================
-CREATE TABLE IF NOT EXISTS support_tickets (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    subscriber_id BIGINT NOT NULL REFERENCES subscribers(id),
-    subject VARCHAR(255) NOT NULL,
-    message TEXT NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    resolved_at TIMESTAMPTZ
-);
-
-CREATE table if not EXISTS url_destination_changes (
+CREATE TABLE IF NOT EXISTS url_destination_changes (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     url_id BIGINT NOT NULL REFERENCES urls(id),
     old_url TEXT NOT NULL,
@@ -133,4 +123,4 @@ CREATE table if not EXISTS url_destination_changes (
     changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_dest_changes_url_id ON url_destination_changes(url_id);
+CREATE INDEX IF NOT EXISTS idx_dest_changes_url_id ON url_destination_changes(url_id);
