@@ -213,13 +213,20 @@ export async function getClickAnalytics(urlId: number, retentionDays: number) {
     ),
 
     pool.query<DayOfWeekRow>(
-      `SELECT TRIM(TO_CHAR(clicked_at, 'Day')) AS "dayOfWeek",
-              COUNT(*)::int AS count
-       FROM clicks
-       WHERE url_id = $1
-         AND clicked_at >= NOW() - make_interval(days => $2)
-       GROUP BY TRIM(TO_CHAR(clicked_at, 'Day'))
-       ORDER BY count DESC`,
+      `SELECT d.day_name AS "dayOfWeek", COALESCE(c.count, 0) AS count
+       FROM (VALUES
+         (0,'Sunday'),(1,'Monday'),(2,'Tuesday'),(3,'Wednesday'),
+         (4,'Thursday'),(5,'Friday'),(6,'Saturday')
+       ) AS d(dow, day_name)
+       LEFT JOIN (
+         SELECT EXTRACT(DOW FROM clicked_at)::int AS dow,
+                COUNT(*)::int AS count
+         FROM clicks
+         WHERE url_id = $1
+           AND clicked_at >= NOW() - make_interval(days => $2)
+         GROUP BY EXTRACT(DOW FROM clicked_at)::int
+       ) c USING (dow)
+       ORDER BY d.dow`,
       baseParams
     ),
 
