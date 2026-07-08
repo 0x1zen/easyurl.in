@@ -37,11 +37,8 @@ app.get("/health", (_req: Request, res: Response) => {
 
 app.use(authRoutes);
 app.use(statsRoutes);
-app.use(urlManagementRoutes);
 app.use(adminRoutes);
-
-// Explicitly serve known frontend routes BEFORE urlRoutes so GET /:code never
-// intercepts /login, /dashboard, etc.
+// Frontend routes BEFORE urlManagementRoutes
 app.get(
   ["/", "/login", "/signup", "/dashboard", "/urls/:id/analytics", "/features", "/pricing"],
   (_req: Request, res: Response) => {
@@ -49,6 +46,8 @@ app.get(
   }
 );
 
+// API routes for /urls/* — after frontend routes
+app.use(urlManagementRoutes);
 app.use(urlRoutes);
 
 // Catch-all: serves React index.html for all frontend routes (/dashboard, /login, /signup, etc.)
