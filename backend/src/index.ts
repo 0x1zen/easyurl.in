@@ -37,17 +37,18 @@ app.get("/health", (_req: Request, res: Response) => {
 
 app.use(authRoutes);
 app.use(statsRoutes);
+app.use(urlManagementRoutes);
 app.use(adminRoutes);
-// Frontend routes BEFORE urlManagementRoutes
+
+// Explicit SPA routes that must be served before urlRoutes, because GET /:code
+// is a single-segment wildcard that would otherwise match /login, /dashboard, etc.
 app.get(
-  ["/", "/login", "/signup", "/dashboard", "/urls/:id/analytics", "/features", "/pricing"],
+  ["/", "/login", "/signup", "/dashboard", "/features", "/pricing"],
   (_req: Request, res: Response) => {
     res.sendFile(path.join(__dirname, "../frontend-dist", "index.html"));
   }
 );
 
-// API routes for /urls/* — after frontend routes
-app.use(urlManagementRoutes);
 app.use(urlRoutes);
 
 // Catch-all: serves React index.html for all frontend routes (/dashboard, /login, /signup, etc.)
