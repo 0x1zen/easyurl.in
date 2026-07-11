@@ -157,8 +157,8 @@ url-shortener/
 **Prerequisites:** Node.js 20+, PostgreSQL, Redis
 
 ```bash
-git clone YOUR_GITHUB_URL
-cd url-shortener
+git clone https://github.com/0x1zen/easyurl.in.git
+cd easyurl.in
 ```
 
 **Backend**
