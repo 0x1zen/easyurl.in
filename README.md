@@ -4,6 +4,7 @@ A full-stack URL shortener built as a portfolio project. Focuses on the engineer
 
 **Live:** https://easyurl.in  
 **Source:** https://github.com/0x1zen/easyurl.in
+**Test Credentials:** Email :- testauth1783182622967@example.com Password :- TestPass123
 
 ---
 
