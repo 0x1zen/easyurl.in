@@ -42,7 +42,10 @@ app.use(statsRoutes);
 // so it loads and makes the authenticated API fetch itself. API calls (with the
 // header) pass through to urlManagementRoutes below.
 app.get("/urls/:id/analytics", (req: Request, res: Response, next: NextFunction) => {
-  if (!req.headers.authorization) {
+  const hasAuth = !!req.headers.authorization;
+  const wantHtml = req.headers.accept?.includes("text/html") ?? false;
+
+  if (!hasAuth && wantHtml) {
     res.sendFile(path.join(__dirname, "../frontend-dist", "index.html"));
     return;
   }
