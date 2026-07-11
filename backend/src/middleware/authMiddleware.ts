@@ -16,12 +16,6 @@ export async function authenticate(
   const authHeader = req.headers["authorization"];
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    // Browser navigation (no auth header) on a route that doubles as a page URL —
-    // fall through so the catch-all can serve index.html and React Router takes over.
-    if (req.accepts("html")) {
-      next();
-      return;
-    }
     res.status(401).json({ error: "Authentication required" });
     return;
   }

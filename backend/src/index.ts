@@ -1,6 +1,6 @@
 import path from "path";
 import express from "express";
-import type { Request, Response } from "express";
+import type { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import redisClient from "./config/redis";
 import authRoutes from "./routes/authRoutes";
@@ -37,6 +37,18 @@ app.get("/health", (_req: Request, res: Response) => {
 
 app.use(authRoutes);
 app.use(statsRoutes);
+
+// Browser refresh on /urls/:id/analytics has no Authorization header — serve React
+// so it loads and makes the authenticated API fetch itself. API calls (with the
+// header) pass through to urlManagementRoutes below.
+app.get("/urls/:id/analytics", (req: Request, res: Response, next: NextFunction) => {
+  if (!req.headers.authorization) {
+    res.sendFile(path.join(__dirname, "../frontend-dist", "index.html"));
+    return;
+  }
+  next();
+});
+
 app.use(urlManagementRoutes);
 app.use(adminRoutes);
 
